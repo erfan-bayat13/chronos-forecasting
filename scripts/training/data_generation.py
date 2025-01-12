@@ -54,7 +54,7 @@ IN_DOMAIN_DATASETS = {
     "m4_monthly": "target",
     #"m4_weekly": "target",
     "monash_pedestrian_counts": "target",
-    "monash_rideshare": "target",
+    "monash_rideshare": "price_mean",
     "taxi_30min": "target",
     "monash_temperature_rain": "target",
     "uber_tlc_daily": "target",
