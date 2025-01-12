@@ -212,7 +212,7 @@ def load_chronos_datasets(max_zero_or_nan):
 
     for datasets, target_name in IN_DOMAIN_DATASETS.items():
         series = load_dataset("autogluon/chronos_datasets", datasets, split="train")
-        n_train = len(0.8 * series[target_name])
+        n_train = int(len(series[target_name]) * 0.8)
         training_series.extend(series[target_name][:n_train])
 
     print(f"\nTotal series loaded: {len(training_series)}")
