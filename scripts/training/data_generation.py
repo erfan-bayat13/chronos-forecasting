@@ -29,36 +29,36 @@ CHRONOS_DATASETS = [
 
 PRETRAINING_DATASETS = {
     #    "brazilian_cities_temperature": "target" --> not on huggingface,
-    "mexico_city_bikes": "target",  # needs to be verified: viewer was not available
-    "solar": "power_mw",
+    # "mexico_city_bikes": "target",  # needs to be verified: viewer was not available
+    #"solar": "power_mw",
     "solar_1h": "power_mw",
     #    "spanish_energy_and_weather": "target"  --> not on huggingface,
     "taxi_1h": "target",
-    "ushcn_daily": "target",  # needs to be verified: viewer was not available
-    "weatherbench_daily": "target",
-    "weatherbench_hourly": "target",  # ?
+    #"ushcn_daily": "target",  # needs to be verified: viewer was not available
+    #"weatherbench_daily": "target",
+    #"weatherbench_hourly": "target",  # ?
     "weatherbench_weekly": "target",
     "wiki_daily_100k": "target",
     "wind_farms_daily": "target",
-    "wind_farms_hourly": "target",
+    #"wind_farms_hourly": "target",
 }
 
 IN_DOMAIN_DATASETS = {
     "electricity_15min": "consumption_kW",
-    "monash_electricity_hourly": "target",
-    "monash_electricity_weekly": "target",
+    #"monash_electricity_hourly": "target",
+    #"monash_electricity_weekly": "target",
     "monash_kdd_cup_2018": "target",
     "monash_london_smart_meters": "target",
-    "m4_daily": "target",
+    #"m4_daily": "target",
     "m4_hourly": "target",
     "m4_monthly": "target",
-    "m4_weekly": "target",
+    #"m4_weekly": "target",
     "monash_pedestrian_counts": "target",
     "monash_rideshare": "target",
     "taxi_30min": "target",
     "monash_temperature_rain": "target",
     "uber_tlc_daily": "target",
-    "uber_tlc_hourly": "target",
+    #"uber_tlc_hourly": "target",
 }
 
 ZERO_SHOT_DATASETS = {
