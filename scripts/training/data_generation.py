@@ -56,7 +56,7 @@ IN_DOMAIN_DATASETS = {
     "monash_pedestrian_counts": "target",
     "monash_rideshare": "price_mean",
     "taxi_30min": "target",
-    "monash_temperature_rain": "target",
+    "monash_temperature_rain": "t_mean",
     "uber_tlc_daily": "target",
     #"uber_tlc_hourly": "target",
 }
