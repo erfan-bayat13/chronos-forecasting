@@ -209,11 +209,13 @@ def load_chronos_datasets(max_zero_or_nan):
     for datasets, target_name in PRETRAINING_DATASETS.items():
         series = load_dataset("autogluon/chronos_datasets", datasets, split="train")
         training_series.extend(series[target_name])
+        print(f"Loaded {len(series[target_name])} series from {datasets}")
 
     for datasets, target_name in IN_DOMAIN_DATASETS.items():
         series = load_dataset("autogluon/chronos_datasets", datasets, split="train")
         n_train = int(len(series[target_name]) * 0.8)
         training_series.extend(series[target_name][:n_train])
+        print(f"Loaded {n_train} series from {datasets}")
 
     print(f"\nTotal series loaded: {len(training_series)}")
     return training_series
@@ -249,29 +251,112 @@ def generate_kernel_synth_ts(length: int = 512, max_kernels: int = 5) -> Dict:
         return generate_kernel_synth_ts(length, max_kernels)
 
 
+# def generate_datasets(
+#     output_dir: str,
+#     n_tsmixup: int = 100_000,  # 100K TSMixup augmentations
+#     n_synthetic: int = 10_000,  # 10K synthetic series  
+#     max_zero_or_nan: float = 0.9,
+#     seed: Optional[int] = None
+# ) -> None:
+#     """Generate datasets with 10:1 ratio of TSMixup:Synthetic data"""
+#     if seed is not None:
+#         np.random.seed(seed)
+
+#     output_dir = Path(output_dir)
+#     output_dir.mkdir(parents=True, exist_ok=True)
+
+#     # Load data from HuggingFace
+#     print("Loading source datasets for TSMixup...")
+#     series_list = load_chronos_datasets(max_zero_or_nan)
+
+#     # Load synthetic data from HuggingFace using streaming
+#     print(f"\nLoading {n_synthetic:,} synthetic time series...")
+#     synthetic_data = []
+#     try:
+#         # Use streaming to load data incrementally
+#         dataset = load_dataset(
+#             "autogluon/chronos_datasets",
+#             "training_corpus_kernel_synth_1m",
+#             split="train",
+#             streaming=True
+#         )
+        
+#         # Take only the number of examples we need
+#         for i, item in enumerate(tqdm(dataset.take(n_synthetic), total=n_synthetic, desc="Loading synthetic data")):
+#             synthetic_data.append({
+#                 "start": pd.Timestamp("2020-01-01"),
+#                 "target": np.array(item["target"], dtype=np.float32)
+#             })
+#     except Exception as e:
+#         print(f"Error loading synthetic data: {str(e)}")
+#         return
+
+#     # Generate TSMixup augmentations - 10x more than synthetic
+#     print(f"\nGenerating {n_tsmixup:,} TSMixup augmentations...")
+#     mixup = TSMixup(TSMixupConfig())
+#     mixup_data = []
+    
+#     # Generate in batches to manage memory
+#     batch_size = 100_000
+#     n_batches = n_tsmixup // batch_size
+#     remaining = n_tsmixup % batch_size
+    
+#     for _ in tqdm(range(n_batches), desc="Generating TSMixup batches"):
+#         batch = [mixup.generate_single_mix(series_list) for _ in range(batch_size)]
+#         mixup_data.extend(batch)
+        
+#     if remaining:
+#         batch = [mixup.generate_single_mix(series_list) for _ in range(remaining)]
+#         mixup_data.extend(batch)
+
+#     print("\nDataset sizes:")
+#     print(f"Synthetic data: {len(synthetic_data):,} series")
+#     print(f"TSMixup data: {len(mixup_data):,} series")
+#     print(f"Ratio (TSMixup:Synthetic): {len(mixup_data)/len(synthetic_data):.1f}:1")
+
+#     # Save to Arrow files with batch writing for memory efficiency
+#     print("\nSaving datasets...")
+#     ArrowWriter(compression="lz4").write_to_file(synthetic_data, output_dir / "kernelsynth_data.arrow")
+#     ArrowWriter(compression="lz4").write_to_file(mixup_data, output_dir / "tsmixup_data.arrow")
+
+
 def generate_datasets(
     output_dir: str,
-    n_tsmixup: int = 100_000,  # 100K TSMixup augmentations
-    n_synthetic: int = 10_000,  # 10K synthetic series  
-    max_zero_or_nan: float = 0.9,
+    n_tsmixup: int = 100_000,  # 100K TSMixup samples
+    n_synthetic: int = 10_000,  # 10K synthetic samples
     seed: Optional[int] = None
 ) -> None:
-    """Generate datasets with 10:1 ratio of TSMixup:Synthetic data"""
+    """Load pre-generated data from training corpus using streaming"""
     if seed is not None:
         np.random.seed(seed)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load data from HuggingFace
-    print("Loading source datasets for TSMixup...")
-    series_list = load_chronos_datasets(max_zero_or_nan)
+    # Load TSMixup data from training corpus using streaming
+    print(f"\nLoading {n_tsmixup:,} TSMixup samples...")
+    tsmixup_data = []
+    try:
+        dataset = load_dataset(
+            "autogluon/chronos_datasets",
+            "training_corpus_tsmixup_10m",
+            split="train",
+            streaming=True
+        )
+        
+        for i, item in enumerate(tqdm(dataset.take(n_tsmixup), total=n_tsmixup, desc="Loading TSMixup data")):
+            tsmixup_data.append({
+                "start": pd.Timestamp("2020-01-01"),
+                "target": np.array(item["target"], dtype=np.float32)
+            })
+    except Exception as e:
+        print(f"Error loading TSMixup data: {str(e)}")
+        return
 
-    # Load synthetic data from HuggingFace using streaming
-    print(f"\nLoading {n_synthetic:,} synthetic time series...")
+    # Load KernelSynth data from training corpus using streaming
+    print(f"\nLoading {n_synthetic:,} KernelSynth samples...")
     synthetic_data = []
     try:
-        # Use streaming to load data incrementally
         dataset = load_dataset(
             "autogluon/chronos_datasets",
             "training_corpus_kernel_synth_1m",
@@ -279,43 +364,24 @@ def generate_datasets(
             streaming=True
         )
         
-        # Take only the number of examples we need
-        for i, item in enumerate(tqdm(dataset.take(n_synthetic), total=n_synthetic, desc="Loading synthetic data")):
+        for i, item in enumerate(tqdm(dataset.take(n_synthetic), total=n_synthetic, desc="Loading KernelSynth data")):
             synthetic_data.append({
                 "start": pd.Timestamp("2020-01-01"),
                 "target": np.array(item["target"], dtype=np.float32)
             })
     except Exception as e:
-        print(f"Error loading synthetic data: {str(e)}")
+        print(f"Error loading KernelSynth data: {str(e)}")
         return
 
-    # Generate TSMixup augmentations - 10x more than synthetic
-    print(f"\nGenerating {n_tsmixup:,} TSMixup augmentations...")
-    mixup = TSMixup(TSMixupConfig())
-    mixup_data = []
-    
-    # Generate in batches to manage memory
-    batch_size = 100_000
-    n_batches = n_tsmixup // batch_size
-    remaining = n_tsmixup % batch_size
-    
-    for _ in tqdm(range(n_batches), desc="Generating TSMixup batches"):
-        batch = [mixup.generate_single_mix(series_list) for _ in range(batch_size)]
-        mixup_data.extend(batch)
-        
-    if remaining:
-        batch = [mixup.generate_single_mix(series_list) for _ in range(remaining)]
-        mixup_data.extend(batch)
-
     print("\nDataset sizes:")
-    print(f"Synthetic data: {len(synthetic_data):,} series")
-    print(f"TSMixup data: {len(mixup_data):,} series")
-    print(f"Ratio (TSMixup:Synthetic): {len(mixup_data)/len(synthetic_data):.1f}:1")
+    print(f"TSMixup data: {len(tsmixup_data):,} series")
+    print(f"KernelSynth data: {len(synthetic_data):,} series")
+    print(f"Ratio (TSMixup:KernelSynth): {len(tsmixup_data)/len(synthetic_data):.1f}:1")
 
-    # Save to Arrow files with batch writing for memory efficiency
+    # Save to Arrow files
     print("\nSaving datasets...")
     ArrowWriter(compression="lz4").write_to_file(synthetic_data, output_dir / "kernelsynth_data.arrow")
-    ArrowWriter(compression="lz4").write_to_file(mixup_data, output_dir / "tsmixup_data.arrow")
+    ArrowWriter(compression="lz4").write_to_file(tsmixup_data, output_dir / "tsmixup_data.arrow")
 
 # generate_datasets('./generated_datasets')
 if __name__ == "__main__":
