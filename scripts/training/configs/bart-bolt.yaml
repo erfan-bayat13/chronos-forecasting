@@ -47,8 +47,8 @@ eos_token_id: 1
 use_eos_token: true
 
 # Infrastructure settings
-tf32: true
-torch_compile: true
+tf32: false
+torch_compile: false
 output_dir: "./output_bart_bolt/"
 
 # Model initialization
