@@ -320,23 +320,6 @@ class ChronosModel(nn.Module):
         top_p: Optional[float] = None,
         return_logits: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Predict future sample tokens for the given token sequences.
-
-        Arguments ``prediction_length``, ``num_samples``, ``temperature``,
-        ``top_k``, ``top_p`` can be used to customize the model inference,
-        and default to the corresponding attributes in ``self.config`` if
-        not provided.
-
-        Returns
-        -------
-        samples : torch.Tensor
-            A tensor of integers, shaped (batch_size, num_samples, time_length),
-            containing forecasted sample paths.
-        logits : torch.Tensor, optional
-            Only returned if return_logits=True. The raw logits from the model
-            for each prediction step.
-        """
         if prediction_length is None:
             prediction_length = self.config.prediction_length
         if num_samples is None:
@@ -347,9 +330,9 @@ class ChronosModel(nn.Module):
             top_k = self.config.top_k
         if top_p is None:
             top_p = self.config.top_p
-
+    
         if return_logits:
-            preds, logits = self.model.generate(
+            outputs = self.model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 generation_config=GenerationConfig(
@@ -364,9 +347,15 @@ class ChronosModel(nn.Module):
                     top_p=top_p,
                     output_scores=True,
                     return_dict_in_generate=True,
+                    renormalize_logits=True,  # Add this
+                    remove_invalid_values=True,  # Add this
+                    use_cache=True,
                 ),
             )
-            preds = preds.sequences
+            preds = outputs.sequences
+            # Convert scores to logits and replace -inf with large negative value
+            logits = torch.stack(outputs.scores, dim=0)
+            logits = logits.masked_fill(logits.isinf(), -1e9)
         else:
             preds = self.model.generate(
                 input_ids=input_ids,
@@ -383,14 +372,14 @@ class ChronosModel(nn.Module):
                     top_p=top_p,
                 ),
             )
-
+    
         if self.config.model_type == "seq2seq":
             preds = preds[..., 1:]  # remove the decoder start token
         else:
             assert self.config.model_type == "causal"
             assert preds.size(-1) == input_ids.size(-1) + prediction_length
             preds = preds[..., -prediction_length:]
-
+    
         preds = preds.reshape(input_ids.size(0), num_samples, -1)
         
         if return_logits:
