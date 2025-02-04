@@ -203,6 +203,8 @@ class MeanScaleUniformBins(ChronosTokenizer):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         context = context.to(dtype=torch.float32)
         attention_mask = ~torch.isnan(context)
+        if self.config.use_cc:
+            context = self.perturb_context(context)
 
         if scale is None:
             scale = torch.nansum(
@@ -212,9 +214,7 @@ class MeanScaleUniformBins(ChronosTokenizer):
 
         scaled_context = context / scale.unsqueeze(dim=-1)
 
-        if self.config.use_cc:
-            scaled_context = self.perturb_context(scaled_context)
-
+        
         token_ids = (
             torch.bucketize(
                 input=scaled_context,
