@@ -64,7 +64,6 @@ def main(num_series:int= 1000,
                            max_mu=max_mu,
                            min_sigma=min_sigma,
                            max_sigma=max_sigma)
-    print(series)
     time = np.linspace(0,years, length_series+1)
     if display_first > 0:
         for i in range(display_first):
