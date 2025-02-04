@@ -51,8 +51,11 @@ def main(num_series:int= 1000,
          max_sigma:float=1,
          output_dir:str = './output/',
          display_first:int = 0,
-         save:bool=True):
+         save:bool=True,
+         seed:int|None = None):
 
+    if seed is not None:
+        np.random.seed(seed)
     assert display_first < num_series
 
     series = generate_data(num_series=num_series,
