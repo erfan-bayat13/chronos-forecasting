@@ -29,12 +29,19 @@ def generate_data(num_series, length_series, step_length, min_initial_price, max
     return series.T
 
 
-def save_series(series, output_dir, filename='brownian_motions.arrow'):
+def save_series(series, output_dir, save_every=None, filename='brownian_motions'):
     series_to_save = []
-    for ts in series:
-        series_to_save.append({"start": np.datetime64("2000-01-01 00:00", "s"), "target": ts})
+    tmp_series_to_save = []
+    count_split = 1
     os.makedirs(output_dir, exist_ok=True)
-    ArrowWriter(compression="lz4").write_to_file(series_to_save, path=output_dir+filename)
+    for i,ts in enumerate(series):
+        series_to_save.append({"start": np.datetime64("2000-01-01 00:00", "s"), "target": ts})
+        tmp_series_to_save.append({"start": np.datetime64("2000-01-01 00:00", "s"), "target": ts})
+        if save_every is not None and (i + 1) % save_every==0:
+            ArrowWriter(compression="lz4").write_to_file(tmp_series_to_save, path=f"{output_dir}/{filename}_split-{count_split}.arrow")
+            tmp_series_to_save=[]
+            count_split +=1
+    ArrowWriter(compression="lz4").write_to_file(series_to_save, path=f"{output_dir}/{filename}.arrow")
 
     
 @app.command()
@@ -47,14 +54,18 @@ def main(num_series:int= 5000,
          max_mu:float=0.10,
          min_sigma:float=0.01,
          max_sigma:float=1,
-         output_dir:str = './output/',
+         output_dir:str = './output',
          display_first:int = 0,
          save:bool=True,
+         save_every:int|None = None,
          seed:int|None = None):
 
     if seed is not None:
         np.random.seed(seed)
     assert display_first < num_series
+
+    if save_every is not None:
+        assert num_series%save_every==0
 
     days_in_year = 260 if use_business_days else 365
     years = length_series/days_in_year
@@ -78,7 +89,7 @@ def main(num_series:int= 5000,
         plt.show()
 
     if save:
-        save_series(series, output_dir=output_dir)
+        save_series(series, output_dir=output_dir, save_every=save_every)
 
 if __name__ == '__main__':
     app()
