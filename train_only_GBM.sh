@@ -19,7 +19,7 @@ for percentage in "${percentages[@]}"; do
     sed -i "s/SYNTHETIC_DATA/${percentage}/g" ./bob_configs/bob_config.yaml
     sed -i "s|OUTPUT_DIR|$path/|g" ./bob_configs/bob_config.yaml
     sed -i "s|ORIGINAL_FILE|$mixup_path|g" ./bob_configs/bob_config.yaml
-    sed -i "s|SYNTHETIC_FILE|$synthetic_path\brownian_motion_split-$count.arrow|g"  ./bob_configs/bob_config.yaml
+    sed -i "s|SYNTHETIC_FILE|$synthetic_path\brownian_motions_split-$count.arrow|g"  ./bob_configs/bob_config.yaml
     sed -i "s|MAX_STEPS|${max_steps[count-1]}|g"  ./bob_configs/bob_config.yaml
     sed -i "s|SAVE_STEPS|${max_steps[count-1]}|g"  ./bob_configs/bob_config.yaml
     python scripts/training/train.py --config ./bob_configs/bob_config.yaml
