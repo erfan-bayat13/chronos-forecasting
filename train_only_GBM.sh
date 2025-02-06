@@ -3,7 +3,7 @@ LC_NUMERIC="en_US.UTF-8"
 percentages=(1 0.9 0.8 0.7 0.6 0.5 0.4 0.3 0.2 0.1)
 max_steps=(500 556 625 714 833 1000 1250 1667 2500 5000)
 path="/content/drive/MyDrive/Financial\\\\ Extension/output_only_GBM"
-synthetic_path="./data/GBM_synth/"
+synthetic_path="/content/chronos-forecasting/data/GBM_synth/"
 mixup_path="/content/drive/MyDrive/GeneratedData/tsmixup_data.arrow"
 model_name="checkpoint-500"
 highest_run=$(printf "%s\n" $path/run-* | grep -o '[0-9]\+' | sort -n | tail -n 1)
@@ -11,7 +11,6 @@ echo $highest_run
 count=1
 run=1
 for percentage in "${percentages[@]}"; do
-    
     complement=$(echo "1 $percentage" | awk '{printf "%.1f", $1 - $2}')
     echo "Train $count: percentage of synthetic ${percentage}, percentage of real data ${complement}"
     rm bob_configs/bob_config.yaml
