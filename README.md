@@ -110,25 +110,25 @@ python c3.py \
 
 ### Parameters
 
-- Model Parameters:
+- **Model Parameters:**
   - `--model_name`: Name or path of the Chronos model (default: "amazon/chronos-t5-small")
   - `--use_bfloat16`: Use bfloat16 precision (flag)
 
-- Data Parameters:
+- **Data Parameters:**
   - `--data_path`: Path to CSV data file (required)
   - `--target_column`: Name of target column in CSV (required)
 
-- Prediction Parameters:
+- **Prediction Parameters:**
   - `--prediction_length`: Number of steps to predict (default: 12)
   - `--num_samples`: Number of samples per prediction (default: 20)
   - `--num_perturbations`: Comma-separated list of perturbation counts to test (default: "8,16,32,64")
 
-- Noise Parameters:
+- **Noise Parameters:**
   - `--noise_dist`: Comma-separated list of noise distributions (default: "gaussian,uniform")
   - `--noise_type`: Comma-separated list of noise types (default: "multiplicative,additive")
   - `--noise_strength`: Comma-separated list of noise strengths (default: "0.01,0.05,0.1")
 
-- Output Parameters:
+- **Output Parameters:**
   - `--output_dir`: Directory for output files (default: "./c3_output")
 
 ### Output Structure
