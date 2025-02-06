@@ -13,18 +13,7 @@
 [![faq](https://img.shields.io/badge/FAQ-Questions%3F-blue)](https://github.com/amazon-science/chronos-forecasting/issues?q=is%3Aissue+label%3AFAQ)
 [![License: MIT](https://img.shields.io/badge/License-Apache--2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
 
-</div>
 
-## 🚀 News
-
-- **26 Nov 2024**: ⚡️ Chronos-Bolt models released [on HuggingFace](https://huggingface.co/collections/amazon/chronos-models-65f1791d630a8d57cb718444). Chronos-Bolt models are more accurate (5% lower error), up to 250x faster and 20x more memory efficient than the original Chronos models of the same size! 
-- **27 Jun 2024**: 🚀 [Released datasets](https://huggingface.co/datasets/autogluon/chronos_datasets) used in the paper and an [evaluation script](./scripts/README.md#evaluating-chronos-models) to compute the WQL and MASE scores reported in the paper. 
-- **17 May 2024**: 🐛 Fixed an off-by-one error in bin indices in the `output_transform`. This simple fix significantly improves the overall performance of Chronos. We will update the results in the next revision on ArXiv.
-- **10 May 2024**: 🚀 We added the code for pretraining and fine-tuning Chronos models. You can find it in [this folder](./scripts/training). We also added [a script](./scripts/kernel-synth.py) for generating synthetic time series data from Gaussian processes (KernelSynth; see Section 4.2 in the paper for details). Check out the [usage examples](./scripts/).
-- **19 Apr 2024**: 🚀 Chronos is now supported on [AutoGluon-TimeSeries](https://auto.gluon.ai/stable/tutorials/timeseries/index.html), the powerful AutoML package for time series forecasting which enables model ensembles, cloud deployments, and much more. Get started with the [tutorial](https://auto.gluon.ai/stable/tutorials/timeseries/forecasting-chronos.html).
-- **08 Apr 2024**: 🧪 Experimental [MLX inference support](https://github.com/amazon-science/chronos-forecasting/tree/mlx) added. If you have an Apple Silicon Mac, you can now obtain significantly faster forecasts from Chronos compared to CPU inference. This provides an alternative way to exploit the GPU on your Apple Silicon Macs together with the "mps" support in PyTorch.
-- **25 Mar 2024**: 🚀 [v1.1.0 released](https://github.com/amazon-science/chronos-forecasting/releases/tag/v1.1.0) with inference optimizations and `pipeline.embed` to extract encoder embeddings from Chronos.
-- **13 Mar 2024**: 🚀 Chronos [paper](https://arxiv.org/abs/2403.07815) and inference code released.
 
 ## ✨ Introduction
 
@@ -72,154 +61,133 @@ The following figure showcases the remarkable **zero-shot** performance of Chron
   </span>
 </p>
 
-## 📈 Usage
+# Extending Chronos: Fine-Tuning and Consistency Calibration
 
-To perform inference with Chronos or Chronos-Bolt models, the easiest way is to install this package through `pip`:
+This repository contains extensions to the Chronos time series forecasting model. Two main extensions are provided:
 
-```sh
-pip install chronos-forecasting
-```
+1. [TODO] Fine-tuning Chronos for financial forecasting using Geometric Brownian Motion (GBM) for synthetic data
+2. Consistency Calibration for Chronos (C3) - A method to improve forecast reliability through input perturbation and aggregation
 
-If you're interested in pretraining, fine-tuning, and other research & development, clone and install the package from source:
+## C3: Consistency Calibration for Chronos
 
-```sh
+C3 improves the reliability of Chronos forecasts by applying controlled perturbations to the input data and aggregating multiple predictions. This helps quantify model uncertainty and produces more robust forecasts.
+
+### Features
+
+- Multiple perturbation strategies (additive and multiplicative noise)
+- Support for both Gaussian and uniform noise distributions
+- Configurable noise strength and number of perturbations
+- Comprehensive evaluation metrics for calibration quality
+- Visualization tools for comparing original and calibrated forecasts
+
+### Installation
+
+```bash
 # Clone the repository
-git clone https://github.com/amazon-science/chronos-forecasting.git
+git clone [https://github.com/erfan-bayat13/chronos-forecasting]
 
 # Install in editable mode with extra training-related dependencies
 cd chronos-forecasting && pip install --editable ".[training]"
 ```
 
-> [!TIP]  
-> This repository is intended for research purposes and provides a minimal interface to Chronos models. The recommended way of using Chronos for production use cases is through [AutoGluon](https://auto.gluon.ai), which features effortless fine-tuning, augmenting Chronos models with exogenous information through covariate regressors, ensembling with other statistical and machine learning models, as well as seamless deployments on AWS with SageMaker 🧠. Check out the AutoGluon Chronos [tutorial](https://auto.gluon.ai/stable/tutorials/timeseries/forecasting-chronos.html).
+### Usage
 
-### Forecasting
+The main script for running C3 is `c3.py`. Here's an example of how to use it:
 
-A minimal example showing how to perform forecasting using Chronos and Chronos-Bolt models:
-
-```python
-import pandas as pd  # requires: pip install pandas
-import torch
-from chronos import BaseChronosPipeline
-
-pipeline = BaseChronosPipeline.from_pretrained(
-    "amazon/chronos-t5-small",  # use "amazon/chronos-bolt-small" for the corresponding Chronos-Bolt model
-    device_map="cuda",  # use "cpu" for CPU inference
-    torch_dtype=torch.bfloat16,
-)
-
-df = pd.read_csv(
-    "https://raw.githubusercontent.com/AileenNielsen/TimeSeriesAnalysisWithPython/master/data/AirPassengers.csv"
-)
-
-# context must be either a 1D tensor, a list of 1D tensors,
-# or a left-padded 2D tensor with batch as the first dimension
-# The original Chronos models generate forecast samples, so forecast has shape
-# [num_series, num_samples, prediction_length].
-# Chronos-Bolt models generate quantile forecasts, so forecast has shape
-# [num_series, num_quantiles, prediction_length].
-forecast = pipeline.predict(
-    context=torch.tensor(df["#Passengers"]), prediction_length=12
-)
+```bash
+python c3.py \
+    --model_name "amazon/chronos-t5-small" \
+    --data_path "path/to/your/data.csv" \
+    --target_column "value" \
+    --prediction_length 14 \
+    --num_samples 20 \
+    --num_perturbations "8,16,32,64" \
+    --noise_dist "gaussian,uniform" \
+    --noise_type "multiplicative,additive" \
+    --noise_strength "0.01,0.05,0.1" \
+    --output_dir "./c3_output"
 ```
 
-More options for `pipeline.predict` can be found with:
+### Parameters
 
-```python
-from chronos import ChronosPipeline, ChronosBoltPipeline
+- Model Parameters:
+  - `--model_name`: Name or path of the Chronos model (default: "amazon/chronos-t5-small")
+  - `--use_bfloat16`: Use bfloat16 precision (flag)
 
-print(ChronosPipeline.predict.__doc__)  # for Chronos models
-print(ChronosBoltPipeline.predict.__doc__)  # for Chronos-Bolt models
-```
+- Data Parameters:
+  - `--data_path`: Path to CSV data file (required)
+  - `--target_column`: Name of target column in CSV (required)
 
-We can now visualize the forecast:
+- Prediction Parameters:
+  - `--prediction_length`: Number of steps to predict (default: 12)
+  - `--num_samples`: Number of samples per prediction (default: 20)
+  - `--num_perturbations`: Comma-separated list of perturbation counts to test (default: "8,16,32,64")
 
-```python
-import matplotlib.pyplot as plt  # requires: pip install matplotlib
-import numpy as np
+- Noise Parameters:
+  - `--noise_dist`: Comma-separated list of noise distributions (default: "gaussian,uniform")
+  - `--noise_type`: Comma-separated list of noise types (default: "multiplicative,additive")
+  - `--noise_strength`: Comma-separated list of noise strengths (default: "0.01,0.05,0.1")
 
-forecast_index = range(len(df), len(df) + 12)
-low, median, high = np.quantile(forecast[0].numpy(), [0.1, 0.5, 0.9], axis=0)
+- Output Parameters:
+  - `--output_dir`: Directory for output files (default: "./c3_output")
 
-plt.figure(figsize=(8, 4))
-plt.plot(df["#Passengers"], color="royalblue", label="historical data")
-plt.plot(forecast_index, median, color="tomato", label="median forecast")
-plt.fill_between(forecast_index, low, high, color="tomato", alpha=0.3, label="80% prediction interval")
-plt.legend()
-plt.grid()
-plt.show()
-```
+### Output Structure
 
-### Extracting Encoder Embeddings
-
-A minimal example showing how to extract encoder embeddings from Chronos models:
-
-```python
-import pandas as pd
-import torch
-from chronos import ChronosPipeline
-
-pipeline = ChronosPipeline.from_pretrained(
-    "amazon/chronos-t5-small",
-    device_map="cuda",
-    torch_dtype=torch.bfloat16,
-)
-
-df = pd.read_csv("https://raw.githubusercontent.com/AileenNielsen/TimeSeriesAnalysisWithPython/master/data/AirPassengers.csv")
-
-# context must be either a 1D tensor, a list of 1D tensors,
-# or a left-padded 2D tensor with batch as the first dimension
-context = torch.tensor(df["#Passengers"])
-embeddings, tokenizer_state = pipeline.embed(context)
-```
-
-### Pretraining, fine-tuning and evaluation
-
-Scripts for pretraining, fine-tuning and evaluating Chronos models can be found in [this folder](./scripts/).
-
-## :floppy_disk: Datasets
-
-Datasets used in the Chronos paper for pretraining and evaluation (both in-domain and zero-shot) are available through the HuggingFace repos: [`autogluon/chronos_datasets`](https://huggingface.co/datasets/autogluon/chronos_datasets) and [`autogluon/chronos_datasets_extra`](https://huggingface.co/datasets/autogluon/chronos_datasets_extra). Check out these repos for instructions on how to download and use the datasets.
-
-## 🔥 Coverage
-
-- [Adapting language model architectures for time series forecasting](https://www.amazon.science/blog/adapting-language-model-architectures-for-time-series-forecasting) (Amazon Science blog post)
-- [Amazon AI Researchers Introduce Chronos: A New Machine Learning Framework for Pretrained Probabilistic Time Series Models](https://www.marktechpost.com/2024/03/15/amazon-ai-researchers-introduce-chronos-a-new-machine-learning-framework-for-pretrained-probabilistic-time-series-models/) (Marktechpost blog post)
-- [Chronos: The Rise of Foundation Models for Time Series Forecasting](https://towardsdatascience.com/chronos-the-rise-of-foundation-models-for-time-series-forecasting-aaeba62d9da3) (Towards Data Science blog post by Luís Roque and Rafael Guedes)
-- [Moirai: Time Series Foundation Models for Universal Forecasting](https://towardsdatascience.com/moirai-time-series-foundation-models-for-universal-forecasting-dc93f74b330f) (Towards Data Science blog post by Luís Roque and Rafael Guedes, includes comparison of Chronos with Moirai)
-- [Chronos: The Latest Time Series Forecasting Foundation Model by Amazon](https://towardsdatascience.com/chronos-the-latest-time-series-forecasting-foundation-model-by-amazon-2687d641705a) (Towards Data Science blog post by Marco Peixeiro)
-  - The original article had a critical bug affecting the metric computation for Chronos. We opened a [pull request](https://github.com/marcopeix/time-series-analysis/pull/10) to fix it.
-- [How to Effectively Forecast Time Series with Amazon's New Time Series Forecasting Model](https://towardsdatascience.com/how-to-effectively-forecast-time-series-with-amazons-new-time-series-forecasting-model-9e04d4ccf67e) (Towards Data Science blog post by Eivind Kjosbakken)
-- [Chronos: Learning the Language of Time Series](https://minimizeregret.com/linked/2024/03/27/chronos-forecasting/) (Minimize Regret blog post by Tim Radtke)
-- [Chronos: Another Zero-Shot Time Series Forecaster LLM](https://levelup.gitconnected.com/chronos-another-zero-shot-time-series-forecaster-llm-0e80753a7ad0) (Level Up Coding blog post by Level Up Coding AI TutorMaster)
-- [Paper Review: Chronos: Learning the Language of Time Series](https://andlukyane.com/blog/paper-review-chronos) (Review by Andrey Lukyanenko)
-- [Foundation Models for Forecasting: the Future or Folly?](https://insights.radix.ai/blog/foundation-models-for-forecasting-the-future-or-folly) (Blog post by Radix)
-- [Learning the Language of Time Series with Chronos](https://medium.com/@ManueleCaddeo/learning-the-language-of-time-series-with-chronos-fea7d0fedde4) (Medium post by Manuele Caddeo)
-- [The latest advancement in Time Series Forecasting from AWS: Chronos](https://medium.com/chat-gpt-now-writes-all-my-articles/the-latest-advancement-in-time-series-forecasting-from-aws-chronos-python-code-included-0205d01248f3) (Medium post by Abish Pius)
-- [Decoding the Future: How Chronos Redefines Time Series Forecasting with the Art of Language](https://medium.com/@zamalbabar/decoding-the-future-how-chronos-redefines-time-series-forecasting-with-the-art-of-language-cecc2174e400) (Medium post by Zamal)
-- [Comparison of Chronos against the SCUM ensemble of statistical models](https://github.com/Nixtla/nixtla/tree/main/experiments/amazon-chronos) (Benchmark by Nixtla)
-  - We opened a [pull request](https://github.com/Nixtla/nixtla/pull/281) extending the analysis to 28 datasets (200K+ time series) and showing that **zero-shot** Chronos models perform comparably to this strong ensemble of 4 statistical models while being significantly faster on average. Our complete response can be [found here](https://www.linkedin.com/pulse/extended-comparison-chronos-against-statistical-ensemble-ansari-4aste/).
-- [Comparison of Chronos against a variety of forecasting models](https://www.linkedin.com/feed/update/urn:li:activity:7178398371815051267/) (Benchmark by ReadyTensor)
-
-## 📝 Citation
-
-If you find Chronos models useful for your research, please consider citing the associated [paper](https://arxiv.org/abs/2403.07815):
+The script creates the following output structure:
 
 ```
-@article{ansari2024chronos,
-  title={Chronos: Learning the Language of Time Series},
-  author={Ansari, Abdul Fatir and Stella, Lorenzo and Turkmen, Caner and Zhang, Xiyuan, and Mercado, Pedro and Shen, Huibin and Shchur, Oleksandr and Rangapuram, Syama Syndar and Pineda Arango, Sebastian and Kapoor, Shubham and Zschiegner, Jasper and Maddix, Danielle C. and Mahoney, Michael W. and Torkkola, Kari and Gordon Wilson, Andrew and Bohlke-Schneider, Michael and Wang, Yuyang},
-  journal={Transactions on Machine Learning Research},
-  issn={2835-8856},
-  year={2024},
-  url={https://openreview.net/forum?id=gerNCVqqtR}
-}
+c3_output/
+├── config.json                    # Experiment configuration
+├── results.json                   # Detailed results
+├── calibration_metrics.csv        # Summary metrics
+├── plots/
+│   ├── coverage_improvement_vs_perturbations.png
+│   ├── width_reduction_vs_perturbations.png
+│   ├── error_reduction_vs_perturbations.png
+│   └── [perturbation_count]/     # Individual experiment plots
+└── calibration/
+    └── [perturbation_count]/     # Calibration metrics by configuration
 ```
 
-## 🛡️ Security
+### Calibration Configurations
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+Three preset configurations are provided:
 
-## 📃 License
+1. Conservative:
+   - Gaussian distribution
+   - Additive noise
+   - Noise strength: 0.1
+   - 16 perturbations
 
-This project is licensed under the Apache-2.0 License.
+2. Moderate:
+   - Gaussian distribution
+   - Additive noise
+   - Noise strength: 0.3
+   - 32 perturbations
+
+3. Aggressive:
+   - Uniform distribution
+   - Multiplicative noise
+   - Noise strength: 0.01
+   - 64 perturbations
+
+### Evaluation Metrics
+
+The calibration quality is evaluated using several metrics:
+
+- Coverage rate: Percentage of true values falling within prediction intervals
+- Interval width: Average width of prediction intervals
+- Prediction error: Median absolute error of point forecasts
+- Consistency score: Standard deviation of predictions across perturbations
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the Apache-2.0 License - see the LICENSE file for details.
+
+## Acknowledgments
+
+This work builds upon the Chronos model developed by Amazon. The implementation draws inspiration from various consistency calibration techniques in machine learning literature.

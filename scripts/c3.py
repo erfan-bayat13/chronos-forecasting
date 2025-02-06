@@ -14,6 +14,10 @@ from calibration_metrics import evaluate_calibration
 def plot_calibrated_forecast(output_dir, context, forecast_index, original_forecast, 
                            calibrated_predictions, noise_config, logit_probs=None):
     """Create and save plot comparing original and calibrated forecasts."""
+    # Ensure output directory exists
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
     plt.figure(figsize=(15, 8))
     
     plt.subplot(1, 2, 1)
@@ -35,7 +39,7 @@ def plot_calibrated_forecast(output_dir, context, forecast_index, original_forec
     
     plt.legend()
     plt.grid(True)
-    plt.title(f"{noise_config['dist'].capitalize()} {noise_config['type']} Noise")
+    plt.title(f"{noise_config['dist'].capitalize()} {noise_config['type']} Noise (n={noise_config['num_perturbations']})")
     
     if logit_probs is not None:
         plt.subplot(1, 2, 2)
@@ -90,6 +94,12 @@ def run_calibration(args):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    # Create subdirectories for results
+    plots_dir = output_dir / "plots"
+    calibration_dir = output_dir / "calibration"
+    for d in [plots_dir, calibration_dir]:
+        d.mkdir(parents=True, exist_ok=True)
+    
     # Save configuration
     config = vars(args)
     with open(output_dir / "config.json", "w") as f:
@@ -126,24 +136,34 @@ def run_calibration(args):
             num_samples=args.num_samples,
             return_logits=True
         )
-    original_forecast = original_forecast.type(torch.float32) 
+    original_forecast = original_forecast.type(torch.float32)
     
-    # Test different noise configurations
+    # Parse perturbation counts
+    perturbation_counts = [int(x) for x in args.num_perturbations.split(',')]
+    
+    # Create combinations of all parameters
     noise_configs = []
     for dist in args.noise_dist.split(','):
         for noise_type in args.noise_type.split(','):
             for strength in [float(s) for s in args.noise_strength.split(',')]:
-                noise_configs.append({
-                    "dist": dist,
-                    "type": noise_type,
-                    "strength": strength
-                })
+                for num_pert in perturbation_counts:
+                    noise_configs.append({
+                        "dist": dist,
+                        "type": noise_type,
+                        "strength": strength,
+                        "num_perturbations": num_pert
+                    })
     
     results = {}
     for noise_config in noise_configs:
         # Create config key
-        config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}"
-        print(f"\nTesting {noise_config['dist']} {noise_config['type']} noise (strength={noise_config['strength']}):")
+        config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
+        print(f"\nTesting {noise_config['dist']} {noise_config['type']} noise "
+              f"(strength={noise_config['strength']}, perturbations={noise_config['num_perturbations']}):")
+        
+        # Create subdirectory for this perturbation count
+        pert_dir = plots_dir / str(noise_config['num_perturbations'])
+        pert_dir.mkdir(parents=True, exist_ok=True)
         
         # Enable CC with current configuration
         pipeline.model.config.use_cc = True
@@ -156,7 +176,7 @@ def run_calibration(args):
         all_logits = []
         
         with torch.no_grad():
-            for _ in range(args.num_perturbations):
+            for _ in range(noise_config["num_perturbations"]):
                 prediction, logits = pipeline.predict(
                     context=context,
                     prediction_length=args.prediction_length,
@@ -169,10 +189,9 @@ def run_calibration(args):
         # Aggregate predictions
         calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits)
         
-        # Create both types of visualizations
-        # 1. Original plot_calibrated_forecast
+        # Create visualizations and save results
         plot_calibrated_forecast(
-            output_dir,
+            pert_dir,
             context,
             forecast_index,
             original_forecast,
@@ -181,21 +200,21 @@ def run_calibration(args):
             probs
         )
         
-        # 2. New evaluation metrics and plots
+        # Calculate calibration metrics
         calibration_metrics = evaluate_calibration(
             original_forecast,
             calibrated_predictions,
             test_targets,
             context=context,
-            output_dir=output_dir / "calibration",
+            output_dir=calibration_dir / str(noise_config["num_perturbations"]),
             config_name=config_key,
             noise_config=noise_config
         )
         
-        # Collect statistics
-        # Add additional statistics to the calibration metrics
+        # Add additional statistics
         metrics_with_stats = {
-            **calibration_metrics,  # Unpack existing calibration metrics
+            **calibration_metrics,
+            'num_perturbations': noise_config["num_perturbations"],
             'model_variance_ratio': float(calibrated_predictions.var().mean() / original_forecast.var().mean().item()),
             'mean_logit': float(mean_logits.mean().item()),
             'logit_std': float(mean_logits.std().item()),
@@ -217,75 +236,49 @@ def run_calibration(args):
             calibration_metrics['width_reduction']
         ))
     
-    # Save detailed results as JSON
+    # Save detailed results
     with open(output_dir / "results.json", "w") as f:
         json.dump(results, f, indent=4)
     
-    # Extract metrics for CSV - results is already in the right format
+    # Create DataFrame with results
     metrics_df = pd.DataFrame(results).T.reset_index()
     metrics_df = metrics_df.rename(columns={'index': 'config_key'})
     
-    # Reorder columns for better readability
-    column_order = [
-        'noise_distribution', 'noise_type', 'noise_strength',
-        'original_coverage_rate', 'calibrated_coverage_rate', 'coverage_improvement',
-        'original_interval_width', 'calibrated_interval_width', 'width_reduction',
-        'original_median_error', 'calibrated_median_error', 'error_reduction',
-        'original_coverage_error', 'calibrated_coverage_error',
-        'original_normalized_width', 'calibrated_normalized_width',
-        'model_variance_ratio', 'mean_logit', 'logit_std', 'max_prob', 'min_prob'
-    ]
+    # Create perturbation analysis plots
+    for metric, title in [
+        ('coverage_improvement', 'Coverage Improvement'),
+        ('width_reduction', 'Width Reduction'),
+        ('error_reduction', 'Error Reduction')
+    ]:
+        plt.figure(figsize=(10, 6))
+        for dist in args.noise_dist.split(','):
+            for noise_type in args.noise_type.split(','):
+                for strength in [float(s) for s in args.noise_strength.split(',')]:
+                    mask = (metrics_df['noise_distribution'] == dist) & \
+                          (metrics_df['noise_type'] == noise_type) & \
+                          (metrics_df['noise_strength'] == strength)
+                    
+                    data = metrics_df[mask].sort_values('num_perturbations')
+                    plt.plot(data['num_perturbations'], 
+                            data[metric], 
+                            marker='o',
+                            label=f'{dist}-{noise_type}-{strength}')
+        
+        plt.title(f'{title} vs Number of Perturbations')
+        plt.xlabel('Number of Perturbations')
+        plt.ylabel(title)
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.tight_layout()
+        plt.savefig(plots_dir / f'{metric}_vs_perturbations.png', bbox_inches='tight')
+        plt.close()
     
-    # Select only columns that exist in the DataFrame
-    available_columns = [col for col in column_order if col in metrics_df.columns]
-    metrics_df = metrics_df[available_columns]
-    
-    # Round numeric columns to 3 decimal places
-    numeric_columns = metrics_df.select_dtypes(include=['float64']).columns
-    metrics_df[numeric_columns] = metrics_df[numeric_columns].round(3)
-    
-    # Save to CSV
+    # Save metrics to CSV
     metrics_df.to_csv(output_dir / "calibration_metrics.csv", index=False)
     
-    # Create a summary plot
-    plt.figure(figsize=(15, 5))
-    
-    # Plot coverage improvement
-    plt.subplot(131)
-    plt.bar(range(len(metrics_df)), metrics_df['coverage_improvement'])
-    plt.title('Coverage Improvement')
-    plt.xticks(range(len(metrics_df)), metrics_df.apply(
-        lambda x: f"{x['noise_distribution']}\n{x['noise_type']}\n{x['noise_strength']}", 
-        axis=1
-    ), rotation=45)
-    
-    # Plot width reduction
-    plt.subplot(132)
-    plt.bar(range(len(metrics_df)), metrics_df['width_reduction'])
-    plt.title('Width Reduction')
-    plt.xticks(range(len(metrics_df)), metrics_df.apply(
-        lambda x: f"{x['noise_distribution']}\n{x['noise_type']}\n{x['noise_strength']}", 
-        axis=1
-    ), rotation=45)
-    
-    # Plot error reduction
-    plt.subplot(133)
-    plt.bar(range(len(metrics_df)), metrics_df['error_reduction'])
-    plt.title('Error Reduction')
-    plt.xticks(range(len(metrics_df)), metrics_df.apply(
-        lambda x: f"{x['noise_distribution']}\n{x['noise_type']}\n{x['noise_strength']}", 
-        axis=1
-    ), rotation=45)
-    
-    plt.tight_layout()
-    plt.savefig(output_dir / "metrics_summary.png", bbox_inches='tight', dpi=300)
-    plt.close()
-    
     print("\nCalibration complete. Results saved to:", output_dir)
-    print("Summary metrics saved to:", output_dir / "calibration_metrics.csv")
-    print("Metrics visualization saved to:", output_dir / "metrics_summary.png")
-    
-    print("\nCalibration complete. Results saved to:", output_dir)
+    print("Detailed metrics saved to:", output_dir / "calibration_metrics.csv")
+    print("Analysis plots saved in:", plots_dir)
 
 def main():
     parser = argparse.ArgumentParser(description="Consistency Calibration for Chronos (C3)")
@@ -307,8 +300,8 @@ def main():
                       help="Number of steps to predict")
     parser.add_argument("--num_samples", type=int, default=20,
                       help="Number of samples per prediction")
-    parser.add_argument("--num_perturbations", type=int, default=32,
-                      help="Number of perturbations for calibration")
+    parser.add_argument("--num_perturbations", type=str, default="8,16,32,64",
+                      help="Comma-separated list of perturbation counts to test")
     
     # Noise parameters
     parser.add_argument("--noise_dist", type=str, default="gaussian,uniform",
