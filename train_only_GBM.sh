@@ -20,7 +20,7 @@ for percentage in "${percentages[@]}"; do
     sed -i "s|SYNTHETIC_FILE|$synthetic_path\brownian_motions_split-$count.arrow|g"  ./bob_configs/bob_config.yaml
     sed -i "s|MAX_STEPS|${max_steps[count-1]}|g"  ./bob_configs/bob_config.yaml
     sed -i "s|SAVE_STEPS|${max_steps[count-1]}|g"  ./bob_configs/bob_config.yaml
-    # python scripts/training/train.py --config ./bob_configs/bob_config.yaml
+    python scripts/training/train.py --config ./bob_configs/bob_config.yaml
     run=$(($highest_run+$count))
     # echo "Run: $run"
     sed -i "s|google/t5-efficient-mini|$path/run-$run/$model_name|g" ./bob_configs/bob_config.yaml 
