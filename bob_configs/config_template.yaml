@@ -16,9 +16,9 @@ optim: adamw_torch_fused
 num_samples: 20
 shuffle_buffer_length: 100_000
 gradient_accumulation_steps: 1
-model_id: google/t5-efficient-mini
+model_id: amazon/chronos-t5-tiny
 model_type: seq2seq
-random_init: true
+random_init: false
 tie_embeddings: true
 output_dir: OUTPUT_DIR
 tf32: true
