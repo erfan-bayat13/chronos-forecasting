@@ -23,9 +23,10 @@ for percentage in "${percentages[@]}"; do
     python scripts/training/train.py --config ./bob_configs/bob_config.yaml
     run=$(($highest_run+$count))
     # echo "Run: $run"
-    sed -i "s|google/t5-efficient-mini|$path/run-$run/$model_name|g" ./bob_configs/bob_config.yaml 
+    sed -i "s|amazon/chronos-t5-tiny|$path/run-$run/$model_name|g" ./bob_configs/bob_config.yaml 
     count=$((count+1))
 done
+
 
 # Training with no mixing
 echo "Training with 5000 samples without using original data..."
