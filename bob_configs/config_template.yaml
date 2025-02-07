@@ -28,7 +28,7 @@ tokenizer_kwargs:
   low_limit: -15.0
   high_limit: 15.0
 n_tokens: 4096
-lr_scheduler_type: linear
+lr_scheduler_type: constant
 warmup_ratio: 0.0
 dataloader_num_workers: 1
 max_missing_prop: 0.9
