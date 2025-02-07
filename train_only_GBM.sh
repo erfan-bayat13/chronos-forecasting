@@ -2,7 +2,7 @@
 LC_NUMERIC="en_US.UTF-8"
 percentages=(1 0.9 0.8 0.7 0.6 0.5 0.4 0.3 0.2 0.1)
 max_steps=(500 556 625 714 833 1000 1250 1667 2500 5000)
-path="/content/drive/MyDrive/Financial Extension/output_only_GBM"
+path="/content/drive/MyDrive/Financial Extension/Output - GBM only"
 synthetic_path="/content/chronos-forecasting/data/GBM_synth/"
 mixup_path="/content/drive/MyDrive/GeneratedData/tsmixup_data.arrow"
 model_name="checkpoint-final"
