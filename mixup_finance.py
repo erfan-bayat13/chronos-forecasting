@@ -90,8 +90,8 @@ def main(base_path:str = './data/',
         filename = base_path+'etfs/'+etf+'.csv'
         tmp_list = list(pd.read_csv(filename)['Adj Close'])
         all_data_list.append(tmp_list)
-    print('Loading stocks...')
 
+    print('Loading stocks...')
     # load stock time series from names
     for stock in tqdm(stocks):
         # correct ~3 incoherent names
@@ -113,10 +113,10 @@ def main(base_path:str = './data/',
     data_mixup = mixup(train, n_samples, min_length, max_length)
 
     # save datasets
-    save_series(all_data_list, base_path, filename='total_data.arrow')
-    save_series(test, base_path, filename='test_finance.arrow')
-    save_series(train, base_path, filename='train_finance.arrow')
-    save_series(data_mixup, base_path, filename=f'mixup_data_train_{n_samples}.arrow')
+    save_series(all_data_list, base_path, filename='total_data')
+    save_series(test, base_path, filename='test_finance')
+    save_series(train, base_path, filename='train_finance')
+    save_series(data_mixup, base_path, filename=f'mixup_data_train_{n_samples}')
 
 if __name__ == '__main__':
     app()
