@@ -110,6 +110,7 @@ def main(base_path:str = './data/',
     train, test = train_test_split(all_data_list, test_size=0.3, shuffle=True, random_state=seed)
 
     # perform mixup
+    print('Performing mixup on training data...')
     data_mixup = mixup(train, n_samples, min_length, max_length)
 
     # save datasets
