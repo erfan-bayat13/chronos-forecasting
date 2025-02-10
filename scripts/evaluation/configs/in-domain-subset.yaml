@@ -1,0 +1,28 @@
+# Backtest configs for the 15 "in-domain" datasets.
+# The training portion of these datasets was part of the 
+# training corpus for Chronos models.
+- name: electricity_15min
+  hf_repo: autogluon/chronos_datasets
+  offset: -5376
+  prediction_length: 24
+  num_rolls: 1
+- name: m4_daily
+  hf_repo: autogluon/chronos_datasets
+  offset: -14
+  prediction_length: 14
+  num_rolls: 1
+- name: monash_pedestrian_counts
+  hf_repo: autogluon/chronos_datasets
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
+- name: monash_temperature_rain
+  hf_repo: autogluon/chronos_datasets
+  offset: -30
+  prediction_length: 30
+  num_rolls: 1
+- name: monash_london_smart_meters
+  hf_repo: autogluon/chronos_datasets
+  offset: -48
+  prediction_length: 48
+  num_rolls: 1
