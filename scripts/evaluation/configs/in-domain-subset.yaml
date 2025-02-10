@@ -16,11 +16,6 @@
   offset: -48
   prediction_length: 48
   num_rolls: 1
-- name: monash_temperature_rain
-  hf_repo: autogluon/chronos_datasets
-  offset: -30
-  prediction_length: 30
-  num_rolls: 1
 - name: monash_london_smart_meters
   hf_repo: autogluon/chronos_datasets
   offset: -48
