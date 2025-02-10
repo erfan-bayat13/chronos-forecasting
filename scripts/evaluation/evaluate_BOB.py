@@ -242,7 +242,6 @@ def generate_forecasts(
 ):
     # Generate forecasts
     forecast_outputs = []
-    forecast_outputs_aligned = []
     for batch in tqdm(batcher(test_data_input, batch_size=batch_size)):
         context = [torch.tensor(entry["target"]) for entry in batch]
         output = pipeline.predict(
@@ -250,7 +249,6 @@ def generate_forecasts(
                 prediction_length=prediction_length,
                 **predict_kwargs,
             ).numpy()
-        forecast_outputs.append(output)
 
         #print("\n Output shape: ", output.shape)
         #print(f"output[1]:{output[1]}")
@@ -266,9 +264,8 @@ def generate_forecasts(
                 aligned_sample = sample + adjustment  # Apply the adjustment
                 aligned_samples.append(aligned_sample)
             
-            forecast_outputs_aligned.append(np.array(aligned_samples))  # Append aligned samples for this time series
+            forecast_outputs.append(np.array(aligned_samples))  # Append aligned samples for this time series
     forecast_outputs = np.concatenate(forecast_outputs)
-    forecast_outputs_aligned = np.concatenate(forecast_outputs_aligned)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []
@@ -289,7 +286,7 @@ def generate_forecasts(
             )
 
     return forecasts
-
+    
 
 @app.command()
 def main(
