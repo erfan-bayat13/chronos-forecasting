@@ -219,9 +219,12 @@ def load_and_split_dataset(backtest_config: dict):
     # be distribued due to license restrictions and must be generated on the fly
     trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
 
-    ds = datasets.load_dataset(
-        hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
-    )
+    if hf_repo == 'local':
+        ds = datasets.load_dataset(dataset_name)
+    else:
+        ds = datasets.load_dataset(
+            hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
+        )
     ds.set_format("numpy")
 
     gts_dataset = to_gluonts_univariate(ds)
@@ -244,16 +247,13 @@ def generate_forecasts(
     forecast_outputs = []
     for batch in tqdm(batcher(test_data_input, batch_size=batch_size)):
         context = [torch.tensor(entry["target"]) for entry in batch]
-        output = pipeline.predict(
+        forecast_outputs.append(
+            pipeline.predict(
                 context,
                 prediction_length=prediction_length,
                 **predict_kwargs,
             ).numpy()
-        print("Output: ", output.shape)
-        print("Context: ", context.shape)
-        for cont, forecast in zip(context, output):
-            forecast = forecast - (forecast[0] - cont[-1])
-            forecast_outputs.append(forecast)
+        )
     forecast_outputs = np.concatenate(forecast_outputs)
 
     # Convert forecast samples into gluonts Forecast objects
