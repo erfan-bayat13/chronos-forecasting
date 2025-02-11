@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 from typing import Iterable, Optional
+from gluonts.dataset.arrow import ArrowFile
 
 import datasets
 import numpy as np
@@ -220,7 +221,7 @@ def load_and_split_dataset(backtest_config: dict):
     trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
 
     if hf_repo == 'local':
-        ds = datasets.load_dataset(dataset_name)
+        ds = ArrowFile(dataset_name)
     else:
         ds = datasets.load_dataset(
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
