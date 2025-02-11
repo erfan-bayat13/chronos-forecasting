@@ -224,6 +224,7 @@ def load_and_split_dataset(backtest_config: dict):
     if hf_repo == 'local':
         ds = ArrowFile(dataset_name)
         gts_dataset = [{'start': pd.Period(entry['start'], freq=freq), 'target': entry['target']} for _, entry in enumerate(ds)]
+        gts_dataset = list(filter(lambda x: len(x['target'])>offset, gts_dataset))
     else:
         ds = datasets.load_dataset(
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
