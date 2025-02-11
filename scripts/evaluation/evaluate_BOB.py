@@ -215,13 +215,15 @@ def load_and_split_dataset(backtest_config: dict):
     offset = backtest_config["offset"]
     prediction_length = backtest_config["prediction_length"]
     num_rolls = backtest_config["num_rolls"]
+    freq = backtest_config.get('freq', 'B')
 
     # This is needed because the datasets in autogluon/chronos_datasets_extra cannot
     # be distribued due to license restrictions and must be generated on the fly
     trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
 
     if hf_repo == 'local':
-        gts_dataset = ArrowFile(dataset_name)
+        ds = ArrowFile(dataset_name)
+        gts_dataset = [{'start': pd.Period(entry['start'], freq=freq), 'target': entry['target']} for _, entry in enumerate(ds)]
     else:
         ds = datasets.load_dataset(
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
