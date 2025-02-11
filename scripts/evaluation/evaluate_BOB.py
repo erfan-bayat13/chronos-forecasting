@@ -249,6 +249,7 @@ def generate_forecasts(
                 prediction_length=prediction_length,
                 **predict_kwargs,
             ).numpy()
+        print(output.shape)
 
         #print("\n Output shape: ", output.shape)
         #print(f"output[1]:{output[1]}")
@@ -256,6 +257,8 @@ def generate_forecasts(
         #print(f"context[1]:{context[1]}")
         for i in range(len(context)):  # Iterate over all 32 time series
             last_observed = context[i][-1].item()  # Get the last observed value of the historical series
+
+
 
             # Align each of the 20 samples for the current time series
             aligned_samples = []
@@ -266,6 +269,7 @@ def generate_forecasts(
             
             forecast_outputs.append(np.array(aligned_samples))  # Append aligned samples for this time series
     forecast_outputs = np.concatenate(forecast_outputs)
+    print(forecast_outputs.shape)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []
