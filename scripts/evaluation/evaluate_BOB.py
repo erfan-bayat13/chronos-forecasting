@@ -268,8 +268,8 @@ def generate_forecasts(
                 aligned_samples.append(aligned_sample)
             
             forecast_outputs.append(np.array(aligned_samples))  # Append aligned samples for this time series
-    forecast_outputs = np.concatenate(forecast_outputs)
-    print(forecast_outputs.shape)
+    #forecast_outputs = np.concatenate(forecast_outputs)
+    #print(forecast_outputs.shape)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []

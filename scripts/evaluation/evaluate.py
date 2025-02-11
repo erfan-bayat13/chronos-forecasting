@@ -252,7 +252,6 @@ def generate_forecasts(
             ).numpy()
         )
     forecast_outputs = np.concatenate(forecast_outputs)
-    print(forecast_outputs.shape)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []
