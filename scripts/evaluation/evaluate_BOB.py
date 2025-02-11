@@ -221,14 +221,14 @@ def load_and_split_dataset(backtest_config: dict):
     trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
 
     if hf_repo == 'local':
-        ds = ArrowFile(dataset_name)
+        gts_dataset = ArrowFile(dataset_name)
     else:
         ds = datasets.load_dataset(
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
         )
-    ds.set_format("numpy")
+        ds.set_format("numpy")
 
-    gts_dataset = to_gluonts_univariate(ds)
+        gts_dataset = to_gluonts_univariate(ds)
 
     # Split dataset for evaluation
     _, test_template = split(gts_dataset, offset=offset)
