@@ -6,3 +6,4 @@
   offset: -24
   prediction_length: 24
   num_rolls: 1
+  freq: 5min
