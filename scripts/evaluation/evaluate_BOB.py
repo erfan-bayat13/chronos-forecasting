@@ -264,6 +264,87 @@ def analyze_gluonts_dataset(trainset):
     return best_quantile, skew_ratio, skewness_value
 
 
+def analyze_gluonts_dataset_volatility(trainset, window=30):
+    """
+    Extracts the target column from a GluonTS dataset and computes overall volatility level.
+
+    Parameters:
+    - trainset (GluonTS dataset): The training dataset.
+    - window (int): Rolling window size for computing volatility.
+
+    Returns:
+    - overall_volatility_level (str): High, Moderate, or Low.
+    - mean_cv (float): Mean Coefficient of Variation across all series.
+    """
+
+    all_targets = []
+
+    # Extract target values from all series
+    for entry in trainset:
+        all_targets.extend(entry["target"])
+
+    all_targets = np.array(all_targets)
+
+    # ✅ Check for empty data
+    if len(all_targets) == 0:
+        print("⚠️ Warning: No data found in training set!")
+        return "Unknown Volatility", np.nan  # Return unknown volatility if empty
+
+    # ✅ Compute standard deviation & mean, handling edge cases
+    std_dev = np.std(all_targets)
+
+    if std_dev == 0 or not np.isfinite(std_dev):
+        print("⚠️ Warning: Standard deviation is zero or invalid, setting CV to NaN")
+        return "Unknown Volatility", np.nan
+
+    # ✅ Clip extreme values
+    std_dev = np.clip(std_dev, 0, 1)  # Since data is normalized
+
+    # Determine overall volatility level based on dataset-wide standard deviation
+    if std_dev > 0.2:  # Adjust this threshold based on dataset behavior
+        overall_volatility_level = "High Volatility"
+    elif std_dev > 0.05:
+        overall_volatility_level = "Moderate Volatility"
+    else:
+        overall_volatility_level = "Low Volatility"
+
+    return overall_volatility_level, std_dev
+
+
+def apply_residual_alignment(forecasted, actual, volatility_level, window=30):
+    """
+    Applies residual alignment dynamically based on detected volatility level.
+
+    Parameters:
+    - forecasted (array-like): Model's forecasted values.
+    - actual (array-like): Ground truth values.
+    - volatility_level (str): "High", "Moderate", or "Low".
+    - window (int): Rolling window size.
+
+    Returns:
+    - adjusted_forecast (array-like): Forecast after residual correction.
+    """
+    forecasted, actual = np.array(forecasted), np.array(actual)
+    residuals = actual[-1] - forecasted  # Compute residuals
+
+    if volatility_level == "High Volatility":
+        # ❌ Skip residual alignment
+        adjusted_forecast = forecasted
+
+    elif volatility_level == "Moderate Volatility":
+        # ✅ Use rolling window residual correction (smoother adjustment)
+        rolling_residuals = pd.Series(residuals).rolling(window=window).mean()
+        adjusted_forecast = forecasted + rolling_residuals.fillna(0).values  # Fill NaN with 0
+
+    else:  # Low Volatility
+        # ✅ Apply full residual alignment (adjust first forecasted point to match last observed)
+        correction_factor = actual[-1] - forecasted[0]  # Align first predicted value
+        adjusted_forecast = forecasted + correction_factor
+
+    return adjusted_forecast
+
+
+
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     series_fields = [
         col
@@ -318,24 +399,42 @@ def load_and_split_dataset(backtest_config: dict):
 
 
 def generate_forecasts(
+    global_volatility_level,
     test_data_input: Iterable,
     pipeline: BaseChronosPipeline,
     prediction_length: int,
     batch_size: int,
     **predict_kwargs,
 ):
-    # Generate forecasts
+    
+
+    # 🚀 Forecast Generation with Global Residual Alignment Strategy
     forecast_outputs = []
     for batch in tqdm(batcher(test_data_input, batch_size=batch_size)):
         context = [torch.tensor(entry["target"]) for entry in batch]
-        forecast_outputs.append(
-            pipeline.predict(
-                context,
-                prediction_length=prediction_length,
-                **predict_kwargs,
-            ).numpy()
-        )
-    forecast_outputs = np.concatenate(forecast_outputs)
+        
+        # Pass updated `predict_kwargs` with global volatility level
+        output = pipeline.predict(
+            context,
+            prediction_length=prediction_length,
+            **predict_kwargs,  # Now contains global_volatility_level
+        ).numpy()
+
+        # Process each time series in the batch
+        for i in range(len(context)):  
+            actual_values = np.array(context[i])  # Get historical series
+            forecasted_samples = output[i]  # All forecast samples for this series
+
+            # Apply residual alignment based on **GLOBAL** volatility level
+            aligned_samples = []
+            for sample in forecasted_samples:  
+                adjusted_sample = apply_residual_alignment(sample, actual_values, global_volatility_level)
+                aligned_samples.append(adjusted_sample)
+
+            forecast_outputs.append(np.array(aligned_samples))  
+
+    # Convert list of arrays into final numpy array
+    forecast_outputs = np.array(forecast_outputs)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []
@@ -430,6 +529,8 @@ def main(
     elif isinstance(pipeline, ChronosBoltPipeline):
         predict_kwargs = {}
 
+    
+
     # Load backtest configs
     with open(config_path) as fp:
         backtest_configs = yaml.safe_load(fp)
@@ -444,12 +545,17 @@ def main(
         train_data,test_data = load_and_split_dataset(backtest_config=config)
         # Analyze dataset and get best quantile
         best_q, sr, skew_value = analyze_gluonts_dataset(train_data)
+        
+        global_volatility_level, mean_cv = analyze_gluonts_dataset_volatility(train_data)
+        logger.info(f"✅ Global Volatility Level: {global_volatility_level} (std: {mean_cv:.3f})")
+        
 
         logger.info(
             f"Generating forecasts for {dataset_name} "
             f"({len(test_data.input)} time series)"
         )
         forecasts = generate_forecasts(
+            global_volatility_level,
             test_data.input,
             pipeline=pipeline,
             prediction_length=prediction_length,
