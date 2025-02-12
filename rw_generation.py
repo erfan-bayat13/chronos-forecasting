@@ -47,7 +47,7 @@ def save_series(series, output_dir, save_every=None, filename='brownian_motions'
 @app.command()
 def main(num_series:int= 5000,
          length_series:int=1024,
-         use_business_days:bool=True, #how many days should pass to compute a year? 260 -> business days
+         steps_in_year:int= 260, #how many days should pass to compute a year? 260 -> business days
          min_initial_price:float=0,
          max_initial_price:float=2000,
          min_mu:float=-0.10,
@@ -67,24 +67,22 @@ def main(num_series:int= 5000,
     if save_every is not None:
         assert num_series%save_every==0
 
-    days_in_year = 260 if use_business_days else 365
-    years = length_series/days_in_year
 
     series = generate_data(num_series=num_series,
                            length_series=length_series,
-                           step_length=1/days_in_year, # step length to compute one unit (in years)
+                           step_length=1/steps_in_year, # step length to compute one unit (in years)
                            min_initial_price=min_initial_price,
                            max_initial_price=max_initial_price,
                            min_mu=min_mu,
                            max_mu=max_mu,
                            min_sigma=min_sigma,
                            max_sigma=max_sigma)
-
-    time = np.linspace(0,years, length_series+1)
+    
+    steps = list(range(length_series+1))
     if display_first > 0:
         for i in range(display_first):
-            plt.plot(time, series[i])
-            plt.xlabel("Years $(t)$")
+            plt.plot(steps, series[i])
+            plt.xlabel("Steps")
             plt.ylabel("Stock Price $(S_t)$")
         plt.show()
 
