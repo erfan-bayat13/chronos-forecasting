@@ -20,7 +20,7 @@ model_id: amazon/chronos-t5-tiny
 model_type: seq2seq
 random_init: false
 tie_embeddings: true
-output_dir: /content
+output_dir: /content/drive/MyDrive/Financial Extension/New Dataset
 tf32: true
 torch_compile: true
 tokenizer_class: "MeanScaleUniformBins"
