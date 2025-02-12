@@ -14,6 +14,7 @@ from gluonts.itertools import batcher
 from gluonts.model.evaluation import evaluate_forecasts
 from gluonts.model.forecast import QuantileForecast, SampleForecast
 from tqdm.auto import tqdm
+import scipy.stats as stats
 
 from chronos import (
     BaseChronosPipeline,
@@ -179,6 +180,89 @@ offset_alias_to_period_alias = {
     "W-SUN": "W-SUN",
 }
 
+import numpy as np
+import scipy.stats as stats
+
+def compute_skewness_ratio(data):
+    """
+    Computes the skewness ratio for dynamic quantile selection.
+
+    Parameters:
+    - data (array-like): Input time series data.
+
+    Returns:
+    - skew_ratio (float): Skewness ratio (Mean - Median) / Std Dev.
+    - skewness_value (float): Traditional skewness measure.
+    """
+    mean_val = np.mean(data)
+    median_val = np.median(data)
+    std_dev = np.std(data, ddof=1)
+    skewness_val = stats.skew(data)
+
+    if std_dev == 0:  # Avoid division by zero
+        skew_ratio = 0
+    else:
+        skew_ratio = (mean_val - median_val) / std_dev
+
+    # ✅ Ensure skew ratio is within a reasonable range
+    skew_ratio = np.clip(skew_ratio, -3, 3)
+
+    # ✅ Ensure skew ratio is finite (not NaN or Inf)
+    if not np.isfinite(skew_ratio):
+        skew_ratio = 0
+
+    return skew_ratio, skewness_val
+
+def dynamic_quantile_selection(skew_ratio, alpha=1.5):
+    """
+    Dynamically selects the best quantile based on skewness ratio.
+
+    Parameters:
+    - skew_ratio (float): Computed skewness ratio.
+    - alpha (float): Sensitivity factor for scaling.
+
+    Returns:
+    - best_quantile (float): Dynamically chosen quantile (between 0.1 and 0.9).
+    """
+    # ✅ Ensure skew ratio is within a reasonable range
+    skew_ratio = np.clip(skew_ratio, -3, 3)
+
+    # ✅ Compute dynamic quantile mapping
+    quantile = 0.5 + 0.4 * np.tanh(alpha * skew_ratio)  
+
+    # ✅ Final clamp to ensure it's strictly between 0.1 and 0.9
+    quantile = np.clip(quantile, 0.1, 0.9)
+
+    return round(quantile, 2)
+
+
+def analyze_gluonts_dataset(trainset):
+    """
+    Extracts the target column from a GluonTS dataset and selects the best dynamic quantile.
+
+    Parameters:
+    - trainset (GluonTS dataset): The training dataset.
+
+    Returns:
+    - best_quantile (float): Dynamically selected quantile.
+    - skew_ratio (float): Computed skewness ratio.
+    """
+    all_targets = []
+
+    # Extract target values from all series
+    for entry in trainset:
+        all_targets.extend(entry["target"])
+
+    all_targets = np.array(all_targets)
+
+    # Compute skewness ratio
+    skew_ratio, skewness_value = compute_skewness_ratio(all_targets)
+
+    # Select the best quantile dynamically
+    best_quantile = dynamic_quantile_selection(skew_ratio)
+
+    return best_quantile, skew_ratio, skewness_value
+
 
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     series_fields = [
@@ -227,10 +311,10 @@ def load_and_split_dataset(backtest_config: dict):
     gts_dataset = to_gluonts_univariate(ds)
 
     # Split dataset for evaluation
-    _, test_template = split(gts_dataset, offset=offset)
+    train_data, test_template = split(gts_dataset, offset=offset)
     test_data = test_template.generate_instances(prediction_length, windows=num_rolls)
 
-    return test_data
+    return (train_data,test_data)
 
 
 def generate_forecasts(
@@ -244,32 +328,14 @@ def generate_forecasts(
     forecast_outputs = []
     for batch in tqdm(batcher(test_data_input, batch_size=batch_size)):
         context = [torch.tensor(entry["target"]) for entry in batch]
-        output = pipeline.predict(
+        forecast_outputs.append(
+            pipeline.predict(
                 context,
                 prediction_length=prediction_length,
                 **predict_kwargs,
             ).numpy()
-        print(output.shape)
-
-        #print("\n Output shape: ", output.shape)
-        #print(f"output[1]:{output[1]}")
-        #print("Context: ", len(context))
-        #print(f"context[1]:{context[1]}")
-        for i in range(len(context)):  # Iterate over all 32 time series
-            last_observed = context[i][-1].item()  # Get the last observed value of the historical series
-
-
-
-            # Align each of the 20 samples for the current time series
-            aligned_samples = []
-            for sample in output[i]:  # Iterate over all 20 samples for this time series
-                adjustment = last_observed - sample[0]  # Compute the adjustment
-                aligned_sample = sample + adjustment  # Apply the adjustment
-                aligned_samples.append(aligned_sample)
-            
-            forecast_outputs.append(np.array(aligned_samples))  # Append aligned samples for this time series
-    #forecast_outputs = np.concatenate(forecast_outputs)
-    #print(forecast_outputs.shape)
+        )
+    forecast_outputs = np.concatenate(forecast_outputs)
 
     # Convert forecast samples into gluonts Forecast objects
     forecasts = []
@@ -374,7 +440,10 @@ def main(
         prediction_length = config["prediction_length"]
 
         logger.info(f"Loading {dataset_name}")
-        test_data = load_and_split_dataset(backtest_config=config)
+
+        train_data,test_data = load_and_split_dataset(backtest_config=config)
+        # Analyze dataset and get best quantile
+        best_q, sr, skew_value = analyze_gluonts_dataset(train_data)
 
         logger.info(
             f"Generating forecasts for {dataset_name} "
@@ -394,7 +463,7 @@ def main(
                 forecasts,
                 test_data=test_data,
                 metrics=[
-                    MASE(),
+                    MASE(forecast_type=best_q),
                     MeanWeightedSumQuantileLoss(np.arange(0.1, 1.0, 0.1)),
                 ],
                 batch_size=5000,
@@ -406,16 +475,30 @@ def main(
             {"dataset": dataset_name, "model": chronos_model_id, **metrics[0]}
         )
 
-    # Save results to a CSV file
-    results_df = (
-        pd.DataFrame(result_rows)
-        .rename(
-            {"MASE[0.5]": "MASE", "mean_weighted_sum_quantile_loss": "WQL"},
-            axis="columns",
-        )
-        .sort_values(by="dataset")
-    )
+
+    # Convert result_rows to DataFrame
+    results_df = pd.DataFrame(result_rows)
+
+    # ✅ Find all columns that contain "MASE"
+    mase_columns = [col for col in results_df.columns if "MASE" in col]
+
+    # ✅ Create a new column "MASE" with the first non-null MASE value in each row
+    results_df["MASE"] = results_df[mase_columns].bfill(axis=1).iloc[:, 0]
+
+    # ✅ Rename WQL column
+    results_df = results_df.rename(columns={"mean_weighted_sum_quantile_loss": "WQL"})
+
+    # ✅ Drop the original MASE columns (optional)
+    results_df = results_df.drop(columns=mase_columns)
+
+    # ✅ Sort by dataset for cleaner output
+    results_df = results_df.sort_values(by="dataset")
+
+    # ✅ Save to CSV
     results_df.to_csv(metrics_path, index=False)
+
+    logger.info(f"Metrics saved to {metrics_path}")
+
 
 
 if __name__ == "__main__":
