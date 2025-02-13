@@ -80,10 +80,14 @@ def main(num_series:int= 5000,
     
     steps = list(range(length_series+1))
     if display_first > 0:
+        plt.figure(figsize=(10,5))
+
         for i in range(display_first):
             plt.plot(steps, series[i])
             plt.xlabel("Steps")
+            plt.title("Geometric Brownian Motions example")
             plt.ylabel("Stock Price $(S_t)$")
+        plt.savefig(f"{output_dir}/GBMs.png")
         plt.show()
 
     if save:
