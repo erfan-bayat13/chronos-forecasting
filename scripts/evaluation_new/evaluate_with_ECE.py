@@ -16,6 +16,8 @@ from gluonts.itertools import batcher
 from gluonts.model.evaluation import evaluate_forecasts
 from gluonts.model.forecast import QuantileForecast, SampleForecast
 from tqdm.auto import tqdm
+from torch.nn.functional import cross_entropy
+
 
 from chronos import (
     BaseChronosPipeline,
@@ -181,6 +183,58 @@ offset_alias_to_period_alias = {
     "W-SUN": "W-SUN",
 }
 
+def softmax(x):
+    return np.exp(x)/sum(np.exp(x))
+
+def compute_probabilities(logits_list, n_perturbations=10, epsilon = 0.1):
+    naive_probs = []
+    consistency_probs = []
+    for logits in tqdm(logits_list):
+      naive_probs_per_logit = []
+      consistency_probs_per_logit = []
+      for logit in logits:
+          naive_probs_per_logit.append(softmax(logit))
+          consistency = np.zeros_like(logit) 
+          for i in range(n_perturbations):
+              logit_perturb = logit + np.random.normal(0, epsilon, size = logit.shape)
+              max_index = np.argmax(logit_perturb)
+              consistency[max_index.item()] += 1
+          consistency /= n_perturbations
+          consistency_probs_per_logit.append(consistency)
+      naive_probs.append(naive_probs_per_logit)
+      consistency_probs.append(consistency_probs_per_logit)
+            
+    return np.array(naive_probs), np.array(consistency_probs)
+
+
+def ECE(predictions, correct_tokens, probs, n_bins=10):
+    correct_predictions_mask = predictions==correct_tokens
+    correct_predictions = predictions[correct_predictions_mask]
+    correct_probs = probs[correct_predictions_mask]
+    epsilon = 1e-9
+    bins = np.linspace(0,1+epsilon,n_bins+1)
+    bin_item_count = np.zeros((n_bins,))
+    bin_accuracies = np.zeros((n_bins,))
+    bin_confidences = np.zeros((n_bins,))
+    for i in range(1,n_bins+1):
+        bin_accuracy = 0
+        probs_bin_map = np.logical_and(probs < bins[i], probs >= bins[i-1])
+        n_bin_predictions = probs_bin_map.sum()
+        bin_item_count[i-1] = n_bin_predictions
+        print(n_bin_predictions)
+        for j,pred in enumerate(correct_predictions):
+            if correct_probs[j,pred]<bins[i] and correct_probs[j,pred]>=bins[i-1]:
+                bin_accuracy += 1
+        bin_accuracy = bin_accuracy / (n_bin_predictions + epsilon)
+        bin_confidence = probs[probs_bin_map]/probs_bin_map.sum()
+        bin_confidence = bin_confidence.sum()
+        bin_accuracies[i-1] = bin_accuracy
+        bin_confidences[i-1] = bin_confidence
+
+    ece = np.abs(bin_accuracies - bin_confidences)*bin_item_count
+    ece = ece.sum()/predictions.numel()
+return ece
+
 
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     series_fields = [
@@ -244,10 +298,11 @@ def load_and_split_dataset(backtest_config: dict):
 def compute_data_for_cc( 
     test_data_input: Iterable,
     pipeline: BaseChronosPipeline,
+    prediction_length:int,
     batch_size: int,
     test_targets,
     **predict_kwargs
-    )
+    ):
     # Generate forecasts
     pipeline.tokenizer.config.prediction_length = prediction_length
     forecast_outputs = []
@@ -260,7 +315,7 @@ def compute_data_for_cc(
         tgt = [torch.tensor(entry[1]["target"][-prediction_length:]) for entry in batch]
         _, original_logits, scale, predicted_tokens = pipeline.predict(
             context=context,
-            prediction_length=1,
+            prediction_length=prediction_length,
             return_logits=True,
             **predict_kwargs
         )
@@ -271,8 +326,34 @@ def compute_data_for_cc(
         correct_tokens.append(correct_batch_tokens)
         logits.append(original_logits)
         predictions.append(predicted_tokens)
+    
+    predictions = [pred.squeeze() for pred in predictions]
+    correct_tokens = [tok[:,:-1] for tok in correct_tokens]
+
+    predictions=torch.cat(predictions)
+    correct_tokens=torch.cat(correct_tokens)
+    logits=torch.cat(logits, axis=1)
+
+    logits = logits.swapaxes(0,1)
 
     return predictions, correct_tokens, logits
+
+
+def compute_probability_metrics(naive_probs, consistency_probs):
+    cross_entropies = []
+    for naives, consistencies in zip(naive_probs, consistency_probs):
+        for naive, cons in zip(naives, consistencies):
+            naive_tensor = torch.from_numpy(naive)
+            cons_tensor = torch.from_numpy(cons)
+            cross_entropies.append(cross_entropy(naive_tensor, cons_tensor)) 
+
+    mean_cross_entropy = np.mean(cross_entropies)
+    mean_abs_difference = np.mean(np.abs(naive_probs-consistency_probs))
+
+    print("Mean cross entropy between naive and consistency: ", mean_cross_entropy)
+    print("Mean absolute difference between naive and consistency: ", mean_abs_difference)
+
+    return mean_cross_entropy, mean_abs_difference
 
 
 def generate_forecasts(
@@ -283,12 +364,9 @@ def generate_forecasts(
     **predict_kwargs,
 ):
     # Generate forecasts
-    pipeline.tokenizer.config.prediction_length = prediction_length
     forecast_outputs = []
-    test_targets = test_targets.dataset
-    for batch in tqdm(batcher(zip(test_data_input, test_targets) , batch_size=batch_size)):
-        context = [torch.tensor(entry[0]["target"]) for entry in batch]
-        tgt = [torch.tensor(entry[1]["target"][-prediction_length:]) for entry in batch]
+    for batch in tqdm(batcher(test_data_input , batch_size=batch_size)):
+        context = [torch.tensor(entry["target"]) for entry in batch]
         forecast_outputs.append(
             pipeline.predict(
                 context,
@@ -296,8 +374,6 @@ def generate_forecasts(
                 **predict_kwargs,
             ).numpy()
         )
-
-        forecast_outputs.append(original_forecast)
     forecast_outputs = np.concatenate(forecast_outputs)
 
     # Convert forecast samples into gluonts Forecast objects
@@ -416,11 +492,26 @@ def main(
             batch_size=batch_size,
             **predict_kwargs,
         )
+        if isinstance(pipeline, ChronosPipeline):
+            predict_kwargs = dict(
+                num_samples=1,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
         predictions, correct_tokens, logits = compute_data_for_cc(test_data.input,
                                                                   pipeline=pipeline,
+                                                                  prediction_length=prediction_length,
                                                                   batch_size=batch_size,
                                                                   test_targets=test_data,
                                                                   **predict_kwargs)
+        naive_probs, consistency_probs = compute_probabilities(logits)
+        compute_probability_metrics(naive_probs, consistency_probs)
+        ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=10)
+        ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=10)
+
+        print("Naive probs ECE: ", ece_naive)
+        print("Consistency probs ECE: ", ece_consistency)
 
 
         logger.info(f"Evaluating forecasts for {dataset_name}")
