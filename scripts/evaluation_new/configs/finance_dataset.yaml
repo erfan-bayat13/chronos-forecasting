@@ -1,0 +1,9 @@
+# Backtest configs for the 15 "in-domain" datasets.
+# The training portion of these datasets was part of the 
+# training corpus for Chronos models.
+- name: /content/test_dataset_5min.arrow 
+  hf_repo: local
+  offset: -24
+  prediction_length: 24
+  num_rolls: 1
+  freq: 5min
