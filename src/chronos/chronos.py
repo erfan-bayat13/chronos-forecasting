@@ -535,13 +535,15 @@ class ChronosPipeline(BaseChronosPipeline):
 
         predictions = []
         all_logits = []
+        scales = []
+        sample_tokens = []
         remaining = prediction_length
 
         while remaining > 0:
             token_ids, attention_mask, scale = self.tokenizer.context_input_transform(
                 context_tensor
             )
-            
+            scales.append(scale)
             if return_logits:
                 samples, logits = self.model(
                     token_ids.to(self.model.device),
@@ -554,6 +556,7 @@ class ChronosPipeline(BaseChronosPipeline):
                     return_logits=True,
                 )
                 all_logits.append(logits)
+                sample_tokens.append(samples)
             else:
                 samples = self.model(
                     token_ids.to(self.model.device),
@@ -583,7 +586,7 @@ class ChronosPipeline(BaseChronosPipeline):
         predictions = torch.cat(predictions, dim=-1).to(dtype=input_dtype, device=input_device)[..., :prediction_length]
         
         if return_logits:
-            return predictions, torch.cat(all_logits, dim=0)
+            return predictions, torch.cat(all_logits, dim=0), torch.cat(scales, dim=0), torch.cat(sample_tokens, dim=0)
         return predictions
 
     def predict_quantiles(

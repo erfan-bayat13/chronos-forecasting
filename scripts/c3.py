@@ -130,12 +130,17 @@ def run_calibration(args):
     # Get original forecast
     pipeline.model.config.use_cc = False
     with torch.no_grad():
-        original_forecast, original_logits = pipeline.predict(
+        original_forecast, original_logits, scale, predicted_tokens = pipeline.predict(
             context=context,
             prediction_length=args.prediction_length,
             num_samples=args.num_samples,
             return_logits=True
         )
+
+    correct_tokens = pipeline.tokenizer.label_input_transform(test_targets, scale)
+
+
+    
     original_forecast = original_forecast.type(torch.float32)
     
     # Parse perturbation counts
