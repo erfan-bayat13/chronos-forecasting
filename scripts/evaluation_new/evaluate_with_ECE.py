@@ -207,7 +207,7 @@ def compute_probabilities(logits_list, n_perturbations=10, epsilon = 0.1):
     return np.array(naive_probs), np.array(consistency_probs)
 
 
-def ECE(predictions, correct_tokens, probs, n_bins=10):
+def ECE(predictions, correct_tokens, probs, n_bins=50):
     correct_predictions_mask = predictions==correct_tokens
     correct_predictions = predictions[correct_predictions_mask]
     correct_probs = probs[correct_predictions_mask]
@@ -216,7 +216,8 @@ def ECE(predictions, correct_tokens, probs, n_bins=10):
     bin_item_count = np.zeros((n_bins,))
     bin_accuracies = np.zeros((n_bins,))
     bin_confidences = np.zeros((n_bins,))
-    for i in range(1,n_bins+1):
+    print("Computing ECE...")
+    for i in tqdm(range(1,n_bins+1)):
         bin_accuracy = 0
         probs_bin_map = np.logical_and(probs < bins[i], probs >= bins[i-1])
         n_bin_predictions = probs_bin_map.sum()
@@ -505,10 +506,10 @@ def main(
                                                                   batch_size=batch_size,
                                                                   test_targets=test_data,
                                                                   **predict_kwargs)
-        naive_probs, consistency_probs = compute_probabilities(logits)
+        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, epsilon = 0.01)
         compute_probability_metrics(naive_probs, consistency_probs)
-        ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=10)
-        ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=10)
+        ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=50)
+        ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=50)
 
         print("Naive probs ECE: ", ece_naive)
         print("Consistency probs ECE: ", ece_consistency)

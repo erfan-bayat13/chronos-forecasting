@@ -1,11 +1,11 @@
 # Backtest configs for the 15 "in-domain" datasets.
 # The training portion of these datasets was part of the 
 # training corpus for Chronos models.
-- name: monash_electricity_hourly
-  hf_repo: autogluon/chronos_datasets
-  offset: -24
-  prediction_length: 24
-  num_rolls: 1
+#- name: monash_electricity_hourly
+#  hf_repo: autogluon/chronos_datasets
+#  offset: -24
+#  prediction_length: 24
+#  num_rolls: 1
 - name: monash_electricity_weekly
   hf_repo: autogluon/chronos_datasets
   offset: -8
