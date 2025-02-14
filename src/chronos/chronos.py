@@ -46,7 +46,7 @@ class ChronosConfig:
     top_k: int
     top_p: float
     use_cc: bool = False
-    cc_noise_dist: str = "guassian"
+    cc_noise_dist: str = "gaussian"
     cc_noise_type: str = "additive"
     cc_noise_strength: float = 0.1
 
@@ -203,8 +203,8 @@ class MeanScaleUniformBins(ChronosTokenizer):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         context = context.to(dtype=torch.float32)
         attention_mask = ~torch.isnan(context)
-        if self.config.use_cc:
-            context = self.perturb_context(context)
+        # if self.config.use_cc:
+        #     context = self.perturb_context(context)
 
         if scale is None:
             scale = torch.nansum(
@@ -385,6 +385,30 @@ class ChronosModel(nn.Module):
             preds = outputs.sequences
             # Convert scores to logits and replace -inf with large negative value
             logits = torch.stack(outputs.scores, dim=0)
+            if hasattr(self.config, 'use_cc') and self.config.use_cc:
+                # Apply noise to logits based on configuration
+                if self.config.cc_noise_dist == "gaussian":
+                    if self.config.cc_noise_type == "additive":
+                        noise = torch.randn_like(logits) * self.config.cc_noise_strength
+                    else:  # multiplicative
+                        noise = 1 + torch.randn_like(logits) * self.config.cc_noise_strength
+                elif self.config.cc_noise_dist == "uniform":
+                    if self.config.cc_noise_type == "additive":
+                        noise = (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
+                    else:  # multiplicative
+                        noise = 1 + (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
+                else:
+                    raise ValueError(f"Unknown noise distribution {self.config.cc_noise_dist}")
+
+                # Apply noise to logits
+                if self.config.cc_noise_type == "additive":
+                    logits = logits + noise
+                elif self.config.cc_noise_type == "multiplicative":
+                    logits = logits * noise
+                else:
+                    raise ValueError(f"Unknown noise type {self.config.cc_noise_type}")
+
+            # Replace -inf with large negative value
             logits = logits.masked_fill(logits.isinf(), -1e9)
         else:
             preds = self.model.generate(
