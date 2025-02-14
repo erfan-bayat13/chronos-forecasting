@@ -233,7 +233,7 @@ def ECE(predictions, correct_tokens, probs, n_bins=10):
 
     ece = np.abs(bin_accuracies - bin_confidences)*bin_item_count
     ece = ece.sum()/predictions.numel()
-return ece
+    return ece
 
 
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
@@ -319,6 +319,7 @@ def compute_data_for_cc(
             return_logits=True,
             **predict_kwargs
         )
+        if(len(context)==1): continue
         tgt = torch.stack(tgt, dim=0)
         # pl_pipeline = pipeline.tokenizer.config.prediction_length
         # pipeline.tokenizer.config.prediction_length = prediction_length
@@ -336,7 +337,7 @@ def compute_data_for_cc(
 
     logits = logits.swapaxes(0,1)
 
-    return predictions, correct_tokens, logits
+    return predictions.cpu(), correct_tokens.cpu(), logits.cpu()
 
 
 def compute_probability_metrics(naive_probs, consistency_probs):
