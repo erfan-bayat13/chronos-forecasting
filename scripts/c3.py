@@ -9,6 +9,8 @@ from pathlib import Path
 import json
 from calibration_metrics import evaluate_calibration
 from ece import analyze_calibration
+import matplotlib.pyplot as plt
+
 
 def aggregate_predictions(all_predictions, all_logits=None):
     """Aggregate predictions from multiple perturbations."""
@@ -34,6 +36,139 @@ def aggregate_predictions(all_predictions, all_logits=None):
         return mean_predictions, probs, mean_logits
     
     return mean_predictions
+
+def to_numpy(tensor_or_array):
+    """Convert tensor to numpy array if it's a tensor."""
+    if isinstance(tensor_or_array, torch.Tensor):
+        return tensor_or_array.detach().cpu().numpy()
+    return tensor_or_array
+
+def plot_prediction_comparison(context, targets, original_forecast, calibrated_predictions, noise_config, save_path=None):
+    """
+    Plot original vs calibrated predictions with confidence intervals.
+    """
+    plt.figure(figsize=(12, 6))
+    
+    # Convert all inputs to numpy and ensure correct dimensions
+    context = to_numpy(context).squeeze()
+    targets = to_numpy(targets).squeeze()
+    original_forecast = to_numpy(original_forecast)
+    calibrated_predictions = to_numpy(calibrated_predictions)
+    
+    # Print shapes for debugging
+    print("Shapes:")
+    print(f"Context: {context.shape}")
+    print(f"Targets: {targets.shape}")
+    print(f"Original forecast: {original_forecast.shape}")
+    print(f"Calibrated predictions: {calibrated_predictions.shape}")
+    
+    # Create x-axis points
+    x_context = np.arange(len(context))
+    x_forecast = np.arange(len(context), len(context) + len(targets))
+    
+    # Plot historical data
+    plt.plot(x_context, context, color='gray', alpha=0.5, label='Historical')
+    plt.plot(x_forecast, targets, color='black', linestyle='--', label='Actual')
+    
+    # Original forecast - take the first batch if multiple batches exist
+    if original_forecast.ndim >= 3:
+        original_mean = np.mean(original_forecast[0], axis=0)
+        original_std = np.std(original_forecast[0], axis=0)
+    else:
+        original_mean = np.mean(original_forecast, axis=0)
+        original_std = np.std(original_forecast, axis=0)
+    
+    plt.plot(x_forecast, original_mean, color='blue', label='Original Forecast')
+    plt.fill_between(x_forecast, 
+                    original_mean - 2*original_std,
+                    original_mean + 2*original_std,
+                    color='blue', alpha=0.2, label='Original 95% CI')
+    
+    # Calibrated forecast
+    if calibrated_predictions.ndim == 4:  # (n_perturbations, batch, samples, seq_len)
+        calibrated_mean = np.mean(calibrated_predictions, axis=(0, 1))[0]
+        calibrated_std = np.std(calibrated_predictions, axis=(0, 1))[0]
+    elif calibrated_predictions.ndim == 3:  # (batch, samples, seq_len)
+        calibrated_mean = np.mean(calibrated_predictions, axis=1)[0]
+        calibrated_std = np.std(calibrated_predictions, axis=1)[0]
+    else:
+        raise ValueError(f"Unexpected shape for calibrated predictions: {calibrated_predictions.shape}")
+    
+    plt.plot(x_forecast, calibrated_mean, color='red', label='Calibrated Forecast')
+    plt.fill_between(x_forecast,
+                    calibrated_mean - 2*calibrated_std,
+                    calibrated_mean + 2*calibrated_std,
+                    color='red', alpha=0.2, label='Calibrated 95% CI')
+    
+    plt.title(f'Prediction Comparison\n{noise_config["dist"].capitalize()} {noise_config["type"]} '
+              f'(strength={noise_config["strength"]}, n={noise_config["num_perturbations"]})')
+    plt.xlabel('Time Step')
+    plt.ylabel('Value')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    if save_path:
+        plt.savefig(save_path)
+    plt.close()
+
+def plot_perturbation_effects(results_df, metrics_to_plot=None, save_path=None):
+    """
+    Plot how different metrics change with number of perturbations.
+    
+    Args:
+        results_df: DataFrame containing results for different configurations
+        metrics_to_plot: List of metrics to plot (default: ECE and coverage)
+        save_path: Optional path to save the plot
+    """
+    if metrics_to_plot is None:
+        metrics_to_plot = [
+            ('ece_reduction_percent', 'ECE Reduction (%)'),
+            ('coverage_improvement', 'Coverage Improvement'),
+            ('model_variance_ratio', 'Variance Ratio')
+        ]
+    
+    n_metrics = len(metrics_to_plot)
+    plt.figure(figsize=(15, 4*n_metrics))
+    
+    for idx, (metric, title) in enumerate(metrics_to_plot, 1):
+        plt.subplot(n_metrics, 1, idx)
+        
+        # Group by configuration
+        configs = results_df.groupby(['dist', 'type', 'strength'])
+        
+        for name, group in configs:
+            dist, type_, strength = name
+            label = f'{dist}-{type_}-{strength}'
+            
+            # Sort by number of perturbations and plot
+            sorted_group = group.sort_values('num_perturbations')
+            plt.plot(sorted_group['num_perturbations'], 
+                    sorted_group[metric], 
+                    'o-', 
+                    label=label)
+        
+        plt.title(f'{title} vs Number of Perturbations')
+        plt.xlabel('Number of Perturbations')
+        plt.ylabel(title)
+        plt.grid(True, alpha=0.3)
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    plt.close()
+
+def process_results_for_plotting(results):
+    """Convert results dictionary to DataFrame with parsed configuration."""
+    df = pd.DataFrame(results).T.reset_index()
+    df = df.rename(columns={'index': 'config_key'})
+    
+    # Parse configuration from config_key
+    df[['dist', 'type', 'strength', 'num_perturbations']] = df['config_key'].str.split('_', expand=True)
+    df['strength'] = df['strength'].astype(float)
+    df['num_perturbations'] = df['num_perturbations'].astype(int)
+    
+    return df
 
 def run_calibration(args):
     """Run consistency calibration with given parameters."""
@@ -170,6 +305,31 @@ def run_calibration(args):
             ece_metrics['ece_reduction_percent']
         ))
     
+    # Create plots directory
+    plots_dir = output_dir / "plots"
+    plots_dir.mkdir(exist_ok=True)
+
+    # Plot predictions for each configuration
+    for noise_config in noise_configs:
+        config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
+        save_path = plots_dir / f"predictions_{config_key}.png"
+        
+        plot_prediction_comparison(
+            context=context,
+            targets=test_targets,
+            original_forecast=original_forecast,
+            calibrated_predictions=calibrated_predictions,
+            noise_config=noise_config,
+            save_path=save_path
+        )
+
+    # Plot perturbation effects
+    results_df = process_results_for_plotting(results)
+    plot_perturbation_effects(
+        results_df,
+        save_path=plots_dir / "perturbation_effects.png"
+    )
+        
     # Save detailed results
     with open(output_dir / "results.json", "w") as f:
         json.dump(results, f, indent=4)
