@@ -221,7 +221,6 @@ def ECE(predictions, correct_tokens, probs, n_bins=10):
         probs_bin_map = np.logical_and(probs < bins[i], probs >= bins[i-1])
         n_bin_predictions = probs_bin_map.sum()
         bin_item_count[i-1] = n_bin_predictions
-        print(n_bin_predictions)
         for j,pred in enumerate(correct_predictions):
             if correct_probs[j,pred]<bins[i] and correct_probs[j,pred]>=bins[i-1]:
                 bin_accuracy += 1
