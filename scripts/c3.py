@@ -11,8 +11,10 @@ from calibration_metrics import evaluate_calibration
 from ece import analyze_calibration
 import matplotlib.pyplot as plt
 
+torch.manual_seed(11)
+np.random.seed(11)
 
-def aggregate_predictions(all_predictions, all_logits=None):
+def aggregate_predictions(all_predictions, all_logits=None, perturb_type="Logits"):
     """Aggregate predictions from multiple perturbations."""
     # Stack predictions properly preserving the sample dimension
     stacked_predictions = np.stack(all_predictions, axis=0)  # (n_perturbations, batch, n_samples, seq_len)
@@ -20,7 +22,7 @@ def aggregate_predictions(all_predictions, all_logits=None):
     # Average across perturbations while keeping sample dimension
     mean_predictions = np.mean(stacked_predictions, axis=0)  # (batch, n_samples, seq_len)
     
-    if all_logits is not None:
+    if all_logits is not None and perturb_type == "Logits":
         stacked_logits = torch.stack(all_logits, dim=0)
         # Normalize logits
         max_val = stacked_logits.max()
@@ -35,7 +37,8 @@ def aggregate_predictions(all_predictions, all_logits=None):
         
         return mean_predictions, probs, mean_logits
     
-    return mean_predictions
+    return mean_predictions, None, None  # If `perturb_type="Input"`, return `None` for probs and logits
+
 
 def to_numpy(tensor_or_array):
     """Convert tensor to numpy array if it's a tensor."""
@@ -43,7 +46,7 @@ def to_numpy(tensor_or_array):
         return tensor_or_array.detach().cpu().numpy()
     return tensor_or_array
 
-def plot_prediction_comparison(context, targets, original_forecast, calibrated_predictions, noise_config, save_path=None):
+def plot_prediction_comparison(context, targets, original_forecast, calibrated_predictions, noise_config, perturb_type, save_path=None):
     """
     Plot original vs calibrated predictions with confidence intervals.
     """
@@ -94,22 +97,28 @@ def plot_prediction_comparison(context, targets, original_forecast, calibrated_p
     else:
         raise ValueError(f"Unexpected shape for calibrated predictions: {calibrated_predictions.shape}")
     
-    plt.plot(x_forecast, calibrated_mean, color='red', label='Calibrated Forecast')
+    plt.plot(x_forecast, calibrated_mean, color='red', label=f'Calibrated Forecast ({perturb_type})')
     plt.fill_between(x_forecast,
                     calibrated_mean - 2*calibrated_std,
                     calibrated_mean + 2*calibrated_std,
-                    color='red', alpha=0.2, label='Calibrated 95% CI')
+                    color='red', alpha=0.2, label=f'Calibrated 95% CI ({perturb_type})')
     
     plt.title(f'Prediction Comparison\n{noise_config["dist"].capitalize()} {noise_config["type"]} '
-              f'(strength={noise_config["strength"]}, n={noise_config["num_perturbations"]})')
+              f'(strength={noise_config["strength"]}, n={noise_config["num_perturbations"]})\n'
+              f'Perturbation: {perturb_type}')
     plt.xlabel('Time Step')
     plt.ylabel('Value')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
     if save_path:
-        plt.savefig(save_path)
+      # Ensure the directory exists
+      save_path.parent.mkdir(parents=True, exist_ok=True)
+      plt.savefig(save_path, bbox_inches='tight')
+      print(f"Plot saved at: {save_path}")  # Debugging output
+    
     plt.close()
+
 
 def plot_perturbation_effects(results_df, metrics_to_plot=None, save_path=None):
     """
@@ -155,7 +164,9 @@ def plot_perturbation_effects(results_df, metrics_to_plot=None, save_path=None):
     
     plt.tight_layout()
     if save_path:
+        save_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
         plt.savefig(save_path, bbox_inches='tight')
+        print(f"Perturbation effects plot saved at: {save_path}")  # Debugging output
     plt.close()
 
 def process_results_for_plotting(results):
@@ -243,22 +254,38 @@ def run_calibration(args):
         
         # Generate multiple predictions with logit perturbation
         all_predictions = []
-        all_logits = []
+        all_logits = [] if args.perturb_type == "Logits" else None
+        if(args.perturb_type=="Logits") : 
+          with torch.no_grad():
+              for _ in range(noise_config["num_perturbations"]):
+                  prediction, logits = pipeline.predict(
+                      context=context,
+                      prediction_length=args.prediction_length,
+                      num_samples=args.num_samples,
+                      return_logits=True
+                  )
+                  all_predictions.append(prediction.cpu().numpy())
+                  all_logits.append(logits)
         
-        with torch.no_grad():
-            for _ in range(noise_config["num_perturbations"]):
-                prediction, logits = pipeline.predict(
-                    context=context,
-                    prediction_length=args.prediction_length,
-                    num_samples=args.num_samples,
-                    return_logits=True
-                )
-                all_predictions.append(prediction.cpu().numpy())
-                all_logits.append(logits)
+          # Aggregate predictions and calculate probabilities
+          calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits)
+
+
+        elif (args.perturb_type=="Input"):
+          with torch.no_grad():
+              for _ in range(noise_config["num_perturbations"]):
+                  prediction = pipeline.predict(
+                      context=context,
+                      prediction_length=args.prediction_length,
+                      num_samples=args.num_samples
+                  )
+                  all_predictions.append(prediction.cpu().numpy())
         
-        # Aggregate predictions and calculate probabilities
-        calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits)
+          # Aggregate predictions and calculate probabilities
         
+        
+        calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits, args.perturb_type)
+
         # Calculate traditional calibration metrics
         calibration_metrics = evaluate_calibration(
             original_forecast,
@@ -278,17 +305,21 @@ def run_calibration(args):
             num_bins=args.ece_bins
         )
         
-        # Combine all metrics
         combined_metrics = {
-            **calibration_metrics,
-            **ece_metrics,
-            'num_perturbations': noise_config["num_perturbations"],
-            'model_variance_ratio': float(calibrated_predictions.var().mean() / original_forecast.var().mean().item()),
-            'mean_logit': float(mean_logits.mean().item()),
-            'logit_std': float(mean_logits.std().item()),
-            'max_prob': float(probs.max().item()),
-            'min_prob': float(probs.min().item())
+          **calibration_metrics,
+          **ece_metrics,
+          'num_perturbations': noise_config["num_perturbations"],
+          'model_variance_ratio': float(calibrated_predictions.var().mean() / original_forecast.var().mean().item()),
         }
+
+        # Only add logit-related metrics if mean_logits is not None (i.e., when perturb_type="Logits")
+        if mean_logits is not None and probs is not None:
+            combined_metrics.update({
+                'mean_logit': float(mean_logits.mean().item()),
+                'logit_std': float(mean_logits.std().item()),
+                'max_prob': float(probs.max().item()),
+                'min_prob': float(probs.min().item())
+            })
         
         results[config_key] = combined_metrics
         
@@ -311,20 +342,27 @@ def run_calibration(args):
 
     # Plot predictions for each configuration
     for noise_config in noise_configs:
-        config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
-        save_path = plots_dir / f"predictions_{config_key}.png"
-        
-        plot_prediction_comparison(
-            context=context,
-            targets=test_targets,
-            original_forecast=original_forecast,
-            calibrated_predictions=calibrated_predictions,
-            noise_config=noise_config,
-            save_path=save_path
-        )
+      config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
+      save_path = output_dir / f"prediction_plot_{args.perturb_type}.png"
+
+      plot_prediction_comparison(
+      context=context,
+      targets=test_targets,
+      original_forecast=original_forecast,
+      calibrated_predictions=calibrated_predictions,
+      noise_config={
+          "dist": args.noise_dist,
+          "type": args.noise_type,
+          "strength": args.noise_strength,
+          "num_perturbations": args.num_perturbations  # Ensure this key is included
+      },
+      perturb_type=args.perturb_type,
+      save_path=save_path
+      )
 
     # Plot perturbation effects
     results_df = process_results_for_plotting(results)
+    print("Results DataFrame columns:", results_df.columns)  # Debugging output
     plot_perturbation_effects(
         results_df,
         save_path=plots_dir / "perturbation_effects.png"
@@ -366,6 +404,9 @@ def main():
                       help="Comma-separated list of perturbation counts to test")
     
     # Noise parameters
+    parser.add_argument("--perturb_type", type=str, default="logits",
+                      help="flag for applying perturbation on input")
+
     parser.add_argument("--noise_dist", type=str, default="gaussian,uniform",
                       help="Comma-separated list of noise distributions to test")
     parser.add_argument("--noise_type", type=str, default="multiplicative,additive",
