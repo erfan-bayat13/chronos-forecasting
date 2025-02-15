@@ -360,7 +360,28 @@ class ChronosModel(nn.Module):
             top_k = self.config.top_k
         if top_p is None:
             top_p = self.config.top_p
-    
+
+        torch.manual_seed(11)
+        # Apply perturbation to INPUT if selected
+        if hasattr(self.config, "perturb_type") and self.config.perturb_type == "Input":
+            if hasattr(self.config, 'use_cc') and self.config.use_cc:
+                if self.config.cc_noise_dist == "gaussian":
+                    if self.config.cc_noise_type == "additive":
+                        noise = torch.randn_like(input_ids, dtype=torch.float32) * self.config.cc_noise_strength
+                    else:  # multiplicative
+                        noise = 1 + torch.randn_like(input_ids, dtype=torch.float32) * self.config.cc_noise_strength
+                elif self.config.cc_noise_dist == "uniform":
+                    if self.config.cc_noise_type == "additive":
+                        noise = (torch.rand_like(input_ids, dtype=torch.float32) * 2 - 1) * self.config.cc_noise_strength
+                    else:  # multiplicative
+                        noise = 1 + (torch.rand_like(input_ids, dtype=torch.float32) * 2 - 1) * self.config.cc_noise_strength
+                else:
+                    raise ValueError(f"Unknown noise distribution {self.config.cc_noise_dist}")
+
+                # Convert input_ids to float, apply noise, and then clamp values to valid range
+                input_ids = input_ids.float() + noise
+                input_ids = input_ids.clamp(min=0, max=self.config.vocab_size - 1).long()  # Ensure valid token IDs
+
         if return_logits:
             outputs = self.model.generate(
                 input_ids=input_ids,
@@ -377,36 +398,37 @@ class ChronosModel(nn.Module):
                     top_p=top_p,
                     output_scores=True,
                     return_dict_in_generate=True,
-                    renormalize_logits=True,  # Add this
-                    remove_invalid_values=True,  # Add this
+                    renormalize_logits=True,
+                    remove_invalid_values=True,
                     use_cache=True,
                 ),
             )
             preds = outputs.sequences
-            # Convert scores to logits and replace -inf with large negative value
             logits = torch.stack(outputs.scores, dim=0)
-            if hasattr(self.config, 'use_cc') and self.config.use_cc:
-                # Apply noise to logits based on configuration
-                if self.config.cc_noise_dist == "gaussian":
-                    if self.config.cc_noise_type == "additive":
-                        noise = torch.randn_like(logits) * self.config.cc_noise_strength
-                    else:  # multiplicative
-                        noise = 1 + torch.randn_like(logits) * self.config.cc_noise_strength
-                elif self.config.cc_noise_dist == "uniform":
-                    if self.config.cc_noise_type == "additive":
-                        noise = (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
-                    else:  # multiplicative
-                        noise = 1 + (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
-                else:
-                    raise ValueError(f"Unknown noise distribution {self.config.cc_noise_dist}")
 
-                # Apply noise to logits
-                if self.config.cc_noise_type == "additive":
-                    logits = logits + noise
-                elif self.config.cc_noise_type == "multiplicative":
-                    logits = logits * noise
-                else:
-                    raise ValueError(f"Unknown noise type {self.config.cc_noise_type}")
+            # Apply perturbation to LOGITS if selected (same logic as before)
+            if hasattr(self.config, "perturb_type") and self.config.perturb_type == "Logits":
+                if hasattr(self.config, 'use_cc') and self.config.use_cc:
+                    if self.config.cc_noise_dist == "gaussian":
+                        if self.config.cc_noise_type == "additive":
+                            noise = torch.randn_like(logits) * self.config.cc_noise_strength
+                        else:  # multiplicative
+                            noise = 1 + torch.randn_like(logits) * self.config.cc_noise_strength
+                    elif self.config.cc_noise_dist == "uniform":
+                        if self.config.cc_noise_type == "additive":
+                            noise = (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
+                        else:  # multiplicative
+                            noise = 1 + (torch.rand_like(logits) * 2 - 1) * self.config.cc_noise_strength
+                    else:
+                        raise ValueError(f"Unknown noise distribution {self.config.cc_noise_dist}")
+
+                    # Apply noise to logits
+                    if self.config.cc_noise_type == "additive":
+                        logits = logits + noise
+                    elif self.config.cc_noise_type == "multiplicative":
+                        logits = logits * noise
+                    else:
+                        raise ValueError(f"Unknown noise type {self.config.cc_noise_type}")
 
             # Replace -inf with large negative value
             logits = logits.masked_fill(logits.isinf(), -1e9)
@@ -426,19 +448,20 @@ class ChronosModel(nn.Module):
                     top_p=top_p,
                 ),
             )
-    
+
         if self.config.model_type == "seq2seq":
-            preds = preds[..., 1:]  # remove the decoder start token
+            preds = preds[..., 1:]  # Remove the decoder start token
         else:
             assert self.config.model_type == "causal"
             assert preds.size(-1) == input_ids.size(-1) + prediction_length
             preds = preds[..., -prediction_length:]
-    
+
         preds = preds.reshape(input_ids.size(0), num_samples, -1)
-        
+
         if return_logits:
             return preds, logits
         return preds
+
 
 
 class ChronosPipeline(BaseChronosPipeline):
