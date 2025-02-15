@@ -9,10 +9,15 @@ from pathlib import Path
 import json
 from calibration_metrics import evaluate_calibration
 from ece import analyze_calibration
+from ece import compute_forecast_ece
 import matplotlib.pyplot as plt
+from datasets import load_dataset
+import random
 
-torch.manual_seed(11)
-np.random.seed(11)
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+
 
 def aggregate_predictions(all_predictions, all_logits=None, perturb_type="Logits"):
     """Aggregate predictions from multiple perturbations."""
@@ -120,14 +125,14 @@ def plot_prediction_comparison(context, targets, original_forecast, calibrated_p
     plt.close()
 
 
-def plot_perturbation_effects(results_df, metrics_to_plot=None, save_path=None):
+def plot_perturbation_effects(final_ece_results, metrics_to_plot=None, save_path=None):
     """
-    Plot how different metrics change with number of perturbations.
-    
+    Plot how different metrics change with number of perturbations, using ECE aggregated across 5 time series.
+
     Args:
-        results_df: DataFrame containing results for different configurations
-        metrics_to_plot: List of metrics to plot (default: ECE and coverage)
-        save_path: Optional path to save the plot
+        final_ece_results: DataFrame containing final aggregated ECE results for all 5 series.
+        metrics_to_plot: List of metrics to plot (default: ECE Reduction, Coverage Improvement, Variance Ratio).
+        save_path: Optional path to save the plot.
     """
     if metrics_to_plot is None:
         metrics_to_plot = [
@@ -142,32 +147,38 @@ def plot_perturbation_effects(results_df, metrics_to_plot=None, save_path=None):
     for idx, (metric, title) in enumerate(metrics_to_plot, 1):
         plt.subplot(n_metrics, 1, idx)
         
-        # Group by configuration
-        configs = results_df.groupby(['dist', 'type', 'strength'])
+        # Group by noise configurations
+        configs = final_ece_results.groupby(['dist', 'type', 'strength'])
         
         for name, group in configs:
             dist, type_, strength = name
             label = f'{dist}-{type_}-{strength}'
             
-            # Sort by number of perturbations and plot
+            # Sort by number of perturbations and plot mean ECE with standard deviation
             sorted_group = group.sort_values('num_perturbations')
             plt.plot(sorted_group['num_perturbations'], 
-                    sorted_group[metric], 
-                    'o-', 
-                    label=label)
-        
+                     sorted_group[f"{metric}_mean"], 
+                     'o-', 
+                     label=label)
+
+            plt.fill_between(sorted_group['num_perturbations'], 
+                             sorted_group[f"{metric}_mean"] - sorted_group[f"{metric}_std"], 
+                             sorted_group[f"{metric}_mean"] + sorted_group[f"{metric}_std"], 
+                             alpha=0.2)
+
         plt.title(f'{title} vs Number of Perturbations')
         plt.xlabel('Number of Perturbations')
         plt.ylabel(title)
         plt.grid(True, alpha=0.3)
         plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    
+
     plt.tight_layout()
     if save_path:
-        save_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure directory exists
+        save_path.parent.mkdir(parents=True, exist_ok=True)
         plt.savefig(save_path, bbox_inches='tight')
         print(f"Perturbation effects plot saved at: {save_path}")  # Debugging output
     plt.close()
+
 
 def process_results_for_plotting(results):
     """Convert results dictionary to DataFrame with parsed configuration."""
@@ -181,204 +192,217 @@ def process_results_for_plotting(results):
     
     return df
 
+
 def run_calibration(args):
-    """Run consistency calibration with given parameters."""
+    """Run consistency calibration with given parameters across multiple time series."""
     warnings.filterwarnings("ignore")
-    
+
     # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Save configuration
     config = vars(args)
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=4)
-    
+
     # Load pipeline and configure device
     pipeline = BaseChronosPipeline.from_pretrained(
         args.model_name,
         device_map="cuda" if torch.cuda.is_available() else "cpu",
         torch_dtype=torch.bfloat16 if args.use_bfloat16 else torch.float32,
     )
+
+    # Load dataset
+    ds = load_dataset("autogluon/chronos_datasets", "nn5")
     
-    # Load and prepare data
-    df = pd.read_csv(args.data_path)
-    full_data = df[args.target_column].values
+    # Get all time series from the dataset
+    all_time_series = ds["train"][args.target_column]
     
-    # Split data into context and test
-    context_length = len(full_data) - args.prediction_length
+    # Randomly select 5 time series
+    num_series = 5
+    selected_indices = random.sample(range(len(all_time_series)), num_series)
+    selected_time_series = [all_time_series[idx] for idx in selected_indices]
     
-    if context_length <= 0:
-        raise ValueError(f"Data length ({len(full_data)}) must be greater than prediction_length ({args.prediction_length})")
-    
-    context = torch.tensor(full_data[:context_length])
-    test_targets = torch.tensor(full_data[context_length:context_length + args.prediction_length])
-    
-    print(f"Using {len(context)} points for context and {len(test_targets)} points for evaluation")
-    
-    # Get original forecast without perturbation
-    pipeline.model.config.use_cc = False
-    with torch.no_grad():
-        original_forecast, original_logits = pipeline.predict(
-            context=context,
-            prediction_length=args.prediction_length,
-            num_samples=args.num_samples,
-            return_logits=True
-        )
-    original_forecast = original_forecast.type(torch.float32)
-    
+    print(f"Selected time series indices: {selected_indices}")
+
     # Parse parameters for different configurations
     perturbation_counts = [int(x) for x in args.num_perturbations.split(',')]
-    noise_configs = []
-    for dist in args.noise_dist.split(','):
-        for noise_type in args.noise_type.split(','):
-            for strength in [float(s) for s in args.noise_strength.split(',')]:
+    noise_distributions = args.noise_dist.split(',')
+    noise_types = args.noise_type.split(',')
+    noise_strengths = [float(s) for s in args.noise_strength.split(',')]
+    
+    # Calculate total number of configurations
+    total_configs = len(perturbation_counts) * len(noise_distributions) * len(noise_types) * len(noise_strengths)
+    
+    # Store results for each time series and configuration
+    all_original_forecasts = []  # Will store original forecasts for each series
+    all_calibrated_predictions = {i: [] for i in range(total_configs)}  # Dictionary to store calibrated predictions by config index
+    all_test_targets = []
+    all_configurations = []
+
+    config_idx = 0  # Track configuration index
+    
+    # First, define all configurations
+    for dist in noise_distributions:
+        for noise_type in noise_types:
+            for strength in noise_strengths:
                 for num_pert in perturbation_counts:
-                    noise_configs.append({
+                    noise_config = {
                         "dist": dist,
                         "type": noise_type,
                         "strength": strength,
                         "num_perturbations": num_pert
-                    })
+                    }
+                    all_configurations.append(noise_config)
+
+    for series_idx, full_data in enumerate(selected_time_series):
+        print(f"\nProcessing time series {series_idx + 1}/{num_series} (dataset index: {selected_indices[series_idx]})")
+
+        # Ensure data is a numpy array
+        if isinstance(full_data, list):
+            full_data = np.array(full_data)
+
+        # Split data into context and test
+        context_length = len(full_data) - args.prediction_length
+        context = torch.tensor(full_data[:context_length], dtype=torch.float32)
+        test_targets = torch.tensor(full_data[context_length:context_length + args.prediction_length], dtype=torch.float32)
+
+        print(f"Using {len(context)} points for context and {len(test_targets)} points for evaluation")
+
+        # Get original forecast without perturbation
+        pipeline.model.config.use_cc = False
+        with torch.no_grad():
+            original_forecast = pipeline.predict(
+                context=context,
+                prediction_length=args.prediction_length,
+                num_samples=args.num_samples,
+                return_logits=False
+            )
+        original_forecast = original_forecast.type(torch.float32)
+
+        # Ensure test_targets shape is consistent
+        test_targets = test_targets.unsqueeze(0).unsqueeze(0)  # (1, 1, prediction_length)
+        test_targets = test_targets.repeat(1, args.num_samples, 1)  # (1, num_samples, prediction_length)
+
+        # Store for final ECE calculation
+        all_original_forecasts.append(original_forecast.numpy())  
+        all_test_targets.append(test_targets.numpy())  
+
+        # Reset configuration index for each series
+        config_idx = 0
+        
+        # Process each configuration
+        for dist in noise_distributions:
+            for noise_type in noise_types:
+                for strength in noise_strengths:
+                    for num_pert in perturbation_counts:
+                        noise_config = {
+                            "dist": dist,
+                            "type": noise_type,
+                            "strength": strength,
+                            "num_perturbations": num_pert
+                        }
+                        print(f"\nTesting configuration: {noise_config}")
+
+                        # Generate multiple perturbed predictions
+                        all_predictions = []
+                        with torch.no_grad():
+                            for _ in range(num_pert):
+                                prediction = pipeline.predict(
+                                    context=context,
+                                    prediction_length=args.prediction_length,
+                                    num_samples=args.num_samples
+                                )
+                                all_predictions.append(prediction.cpu().numpy())
+
+                        # Aggregate predictions
+                        calibrated_predictions, _, _ = aggregate_predictions(all_predictions)
+
+                        # Store calibrated predictions for this configuration
+                        all_calibrated_predictions[config_idx].append(calibrated_predictions)
+                        
+                        # Increment configuration index
+                        config_idx += 1
+
+    # Convert lists to numpy arrays
+    all_original_forecasts = np.array(all_original_forecasts)  # (5, 1, num_samples, prediction_length)
+    all_test_targets = np.array(all_test_targets)  # (5, 1, num_samples, prediction_length)
+
+    print(f"Original forecasts shape: {all_original_forecasts.shape}")
+    print(f"Test targets shape: {all_test_targets.shape}")
+
+    # Process each configuration separately for ECE calculation
+    final_results = []
     
-    results = {}
-    for noise_config in noise_configs:
-        config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
-        print(f"\nTesting configuration: {config_key}")
+    for i, config in enumerate(all_configurations):
+        # Stack calibrated predictions for this configuration
+        calibrated_preds_for_config = np.array(all_calibrated_predictions[i])  # (5, 1, num_samples, prediction_length)
         
-        # Enable CC with current configuration
-        pipeline.model.config.use_cc = True
-        pipeline.model.config.cc_noise_dist = noise_config["dist"]
-        pipeline.model.config.cc_noise_type = noise_config["type"]
-        pipeline.model.config.cc_noise_strength = noise_config["strength"]
+        print(f"Configuration {i+1}/{len(all_configurations)}: {config}")
+        print(f"Calibrated predictions shape for this config: {calibrated_preds_for_config.shape}")
         
-        # Generate multiple predictions with logit perturbation
-        all_predictions = []
-        all_logits = [] if args.perturb_type == "Logits" else None
-        if(args.perturb_type=="Logits") : 
-          with torch.no_grad():
-              for _ in range(noise_config["num_perturbations"]):
-                  prediction, logits = pipeline.predict(
-                      context=context,
-                      prediction_length=args.prediction_length,
-                      num_samples=args.num_samples,
-                      return_logits=True
-                  )
-                  all_predictions.append(prediction.cpu().numpy())
-                  all_logits.append(logits)
-        
-          # Aggregate predictions and calculate probabilities
-          calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits)
-
-
-        elif (args.perturb_type=="Input"):
-          with torch.no_grad():
-              for _ in range(noise_config["num_perturbations"]):
-                  prediction = pipeline.predict(
-                      context=context,
-                      prediction_length=args.prediction_length,
-                      num_samples=args.num_samples
-                  )
-                  all_predictions.append(prediction.cpu().numpy())
-        
-          # Aggregate predictions and calculate probabilities
-        
-        
-        calibrated_predictions, probs, mean_logits = aggregate_predictions(all_predictions, all_logits, args.perturb_type)
-
-        # Calculate traditional calibration metrics
-        calibration_metrics = evaluate_calibration(
-            original_forecast,
-            calibrated_predictions,
-            test_targets,
-            context=context,
-            config_name=config_key,
-            noise_config=noise_config
+        # Calculate ECE for this configuration
+        orig_ece, _ = compute_forecast_ece(
+            all_original_forecasts, all_test_targets, 
+            tolerance=args.ece_tolerance, num_bins=args.ece_bins, 
+            return_bins=True
         )
         
-        # Calculate ECE metrics
-        ece_metrics = analyze_calibration(
-            original_forecast,
-            torch.from_numpy(calibrated_predictions),
-            test_targets,
-            tolerance=args.ece_tolerance,
-            num_bins=args.ece_bins
+        cal_ece, _ = compute_forecast_ece(
+            calibrated_preds_for_config, all_test_targets,
+            tolerance=args.ece_tolerance, num_bins=args.ece_bins,
+            return_bins=True
         )
         
-        combined_metrics = {
-          **calibration_metrics,
-          **ece_metrics,
-          'num_perturbations': noise_config["num_perturbations"],
-          'model_variance_ratio': float(calibrated_predictions.var().mean() / original_forecast.var().mean().item()),
-        }
-
-        # Only add logit-related metrics if mean_logits is not None (i.e., when perturb_type="Logits")
-        if mean_logits is not None and probs is not None:
-            combined_metrics.update({
-                'mean_logit': float(mean_logits.mean().item()),
-                'logit_std': float(mean_logits.std().item()),
-                'max_prob': float(probs.max().item()),
-                'min_prob': float(probs.min().item())
-            })
+        # Compute coverage improvement based on model variance
+        original_variance = np.var(all_original_forecasts)
+        calibrated_variance = np.var(calibrated_preds_for_config)
+        variance_ratio = calibrated_variance / original_variance if original_variance > 0 else 1.0
         
-        results[config_key] = combined_metrics
+        ece_improvement = orig_ece - cal_ece
+        ece_reduction_percent = (ece_improvement / orig_ece * 100) if orig_ece > 0 else 0
         
-        # Print summary
-        print(f"\nResults for {config_key}:")
-        print("Coverage rate: {:.3f} -> {:.3f} (improvement: {:.3f})".format(
-            calibration_metrics['original_coverage_rate'],
-            calibration_metrics['calibrated_coverage_rate'],
-            calibration_metrics['coverage_improvement']
-        ))
-        print("ECE: {:.3f} -> {:.3f} (reduction: {:.1f}%)".format(
-            ece_metrics['original_ece'],
-            ece_metrics['calibrated_ece'],
-            ece_metrics['ece_reduction_percent']
-        ))
+        # Store results
+        final_results.append({
+            "dist": config["dist"],
+            "type": config["type"], 
+            "strength": config["strength"],
+            "num_perturbations": config["num_perturbations"],
+            "original_ece": orig_ece,
+            "calibrated_ece": cal_ece,
+            "ece_reduction_percent": ece_reduction_percent,
+            "ece_reduction_percent_mean": ece_reduction_percent,  # For compatibility with plotting
+            "ece_reduction_percent_std": 0,                      # For compatibility with plotting
+            "coverage_improvement": variance_ratio,
+            "coverage_improvement_mean": variance_ratio,         # For compatibility with plotting
+            "coverage_improvement_std": 0,                       # For compatibility with plotting
+            "model_variance_ratio": variance_ratio,
+            "model_variance_ratio_mean": variance_ratio,         # For compatibility with plotting
+            "model_variance_ratio_std": 0                        # For compatibility with plotting
+        })
     
-    # Create plots directory
-    plots_dir = output_dir / "plots"
-    plots_dir.mkdir(exist_ok=True)
+    # Convert to DataFrame
+    final_ece_results_df = pd.DataFrame(final_results)
 
-    # Plot predictions for each configuration
-    for noise_config in noise_configs:
-      config_key = f"{noise_config['dist']}_{noise_config['type']}_{noise_config['strength']}_{noise_config['num_perturbations']}"
-      save_path = output_dir / f"prediction_plot_{args.perturb_type}.png"
-
-      plot_prediction_comparison(
-      context=context,
-      targets=test_targets,
-      original_forecast=original_forecast,
-      calibrated_predictions=calibrated_predictions,
-      noise_config={
-          "dist": args.noise_dist,
-          "type": args.noise_type,
-          "strength": args.noise_strength,
-          "num_perturbations": args.num_perturbations  # Ensure this key is included
-      },
-      perturb_type=args.perturb_type,
-      save_path=save_path
-      )
-
+    # Save results to CSV
+    final_ece_results_df.to_csv(output_dir / "final_ece_results.csv", index=False)
+    
+    # Create plot directory
+    plot_dir = output_dir / "plots"
+    plot_dir.mkdir(exist_ok=True)
+    
+    # Save selected indices
+    with open(output_dir / "selected_indices.json", "w") as f:
+        json.dump({"selected_indices": selected_indices}, f, indent=4)
+    
     # Plot perturbation effects
-    results_df = process_results_for_plotting(results)
-    print("Results DataFrame columns:", results_df.columns)  # Debugging output
     plot_perturbation_effects(
-        results_df,
-        save_path=plots_dir / "perturbation_effects.png"
+        final_ece_results_df,
+        save_path=plot_dir / "perturbation_effects.png"
     )
-        
-    # Save detailed results
-    with open(output_dir / "results.json", "w") as f:
-        json.dump(results, f, indent=4)
-    
-    # Save metrics summary
-    metrics_df = pd.DataFrame(results).T.reset_index()
-    metrics_df = metrics_df.rename(columns={'index': 'config_key'})
-    metrics_df.to_csv(output_dir / "calibration_metrics.csv", index=False)
-    
+
     print("\nCalibration complete. Results saved to:", output_dir)
-    print("Detailed metrics saved to:", output_dir / "calibration_metrics.csv")
 
 def main():
     parser = argparse.ArgumentParser(description="Consistency Calibration for Chronos (C3)")
@@ -390,10 +414,8 @@ def main():
                       help="Use bfloat16 precision")
     
     # Data parameters
-    parser.add_argument("--data_path", type=str, required=True,
-                      help="Path to CSV data file")
-    parser.add_argument("--target_column", type=str, required=True,
-                      help="Name of target column in CSV")
+    parser.add_argument("--target_column", type=str, default="target",
+                      help="Name of target column in dataset")
     
     # Prediction parameters
     parser.add_argument("--prediction_length", type=int, default=12,
