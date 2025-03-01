@@ -17,6 +17,8 @@ from gluonts.model.evaluation import evaluate_forecasts
 from gluonts.model.forecast import QuantileForecast, SampleForecast
 from tqdm.auto import tqdm
 from torch.nn.functional import cross_entropy
+from torchmetrics.classification import MulticlassCalibrationError
+
 
 
 from chronos import (
@@ -506,11 +508,18 @@ def main(
                                                                   batch_size=batch_size,
                                                                   test_targets=test_data,
                                                                   **predict_kwargs)
-        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, epsilon = 0.01)
-        compute_probability_metrics(naive_probs, consistency_probs)
-        ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=50)
-        ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=50)
-
+        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, epsilon = 1e9)
+        naive_probs = torch.from_numpy(naive_probs).flatten(start_dim=0, end_dim=1)
+        consistency_probs = torch.from_numpy(consistency_probs).flatten(start_dim=0, end_dim=1)
+        correct_tokens = correct_tokens.flatten(start_dim=0, end_dim=1)
+        print(naive_probs.shape, consistency_probs.shape, correct_tokens.shape)
+        # compute_probability_metrics(naive_probs, consistency_probs)
+        # ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=50)
+        # ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=50)
+        LIB_ECE = MulticlassCalibrationError(num_classes = naive_probs.shape[-1],
+                                        n_bins = 20)
+        ece_naive = LIB_ECE(naive_probs, correct_tokens)
+        ece_consistency = LIB_ECE(consistency_probs, correct_tokens)
         print("Naive probs ECE: ", ece_naive)
         print("Consistency probs ECE: ", ece_consistency)
 
