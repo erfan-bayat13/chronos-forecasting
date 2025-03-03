@@ -18,7 +18,7 @@ from gluonts.model.forecast import QuantileForecast, SampleForecast
 from tqdm.auto import tqdm
 from torch.nn.functional import cross_entropy
 from torchmetrics.classification import MulticlassCalibrationError
-
+import matplotlib.pyplot as plt
 
 
 from chronos import (
@@ -188,7 +188,7 @@ offset_alias_to_period_alias = {
 def softmax(x):
     return np.exp(x)/sum(np.exp(x))
 
-def compute_probabilities(logits_list, n_perturbations=10, epsilon = 0.1):
+def compute_probabilities(logits_list, n_perturbations=10, std = 0.1):
     naive_probs = []
     consistency_probs = []
     for logits in tqdm(logits_list):
@@ -198,7 +198,7 @@ def compute_probabilities(logits_list, n_perturbations=10, epsilon = 0.1):
           naive_probs_per_logit.append(softmax(logit))
           consistency = np.zeros_like(logit) 
           for i in range(n_perturbations):
-              logit_perturb = logit + np.random.normal(0, epsilon, size = logit.shape)
+              logit_perturb = logit + np.random.normal(0, std, size = logit.shape)
               max_index = np.argmax(logit_perturb)
               consistency[max_index.item()] += 1
           consistency /= n_perturbations
@@ -399,6 +399,20 @@ def generate_forecasts(
 
     return forecasts
 
+def group_logits_and_labels(logits, correct_tokens, group_size=10):
+    num_classes = logits.shape[-1]
+    num_new_classes = num_classes // group_size  # Reduce the number of classes
+    
+    # Trim logits if not divisible by group_size
+    trimmed_size = num_new_classes * group_size
+    logits_trimmed = logits[..., :trimmed_size]  # Remove excess classes if needed
+    
+    # Reshape and sum within groups
+    grouped_logits = logits_trimmed.reshape(*logits.shape[:-1], num_new_classes, group_size).sum(axis=-1)
+    
+    grouped_tokens = correct_tokens // group_size
+    return grouped_logits, grouped_tokens
+
 
 @app.command()
 def main(
@@ -508,16 +522,37 @@ def main(
                                                                   batch_size=batch_size,
                                                                   test_targets=test_data,
                                                                   **predict_kwargs)
-        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, epsilon = 1e9)
+        #logits,correct_tokens = group_logits_and_labels(logits, correct_tokens, group_size=10) # eps = 450 with gs 10
+        std = 25
+        n_bins = 10
+        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, std = std) #batch, items_in_batch, prob_tokens
         naive_probs = torch.from_numpy(naive_probs).flatten(start_dim=0, end_dim=1)
+        #consistency_probs = torch.full_like(naive_probs, 1/4096)
         consistency_probs = torch.from_numpy(consistency_probs).flatten(start_dim=0, end_dim=1)
+
+
+        # Get max confidence per sample
+        confidences_cons = consistency_probs.max(dim=-1).values
+        confidences_naive = naive_probs.max(dim=-1).values
+
+        # Plot histogram
+        plt.hist(confidences_cons.numpy(), bins=n_bins, range=(0, 1), alpha=0.5, color='blue', edgecolor='black', label='Consistency')
+        plt.hist(confidences_naive.numpy(), bins=n_bins, range=(0, 1), alpha=0.5, color='orange', edgecolor='black', label='Naive')
+
+        plt.xlabel("Confidence")
+        plt.ylabel("Count")
+        plt.title(f"Distribution of Consistency Probabilities std={std}")
+        plt.legend()
+        plt.show()
+
+
         correct_tokens = correct_tokens.flatten(start_dim=0, end_dim=1)
         print(naive_probs.shape, consistency_probs.shape, correct_tokens.shape)
         # compute_probability_metrics(naive_probs, consistency_probs)
         # ece_naive = ECE(predictions, correct_tokens, naive_probs, n_bins=50)
         # ece_consistency = ECE(predictions, correct_tokens, consistency_probs, n_bins=50)
         LIB_ECE = MulticlassCalibrationError(num_classes = naive_probs.shape[-1],
-                                        n_bins = 20)
+                                        n_bins = n_bins)
         ece_naive = LIB_ECE(naive_probs, correct_tokens)
         ece_consistency = LIB_ECE(consistency_probs, correct_tokens)
         print("Naive probs ECE: ", ece_naive)
