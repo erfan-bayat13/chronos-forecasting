@@ -237,6 +237,48 @@ def ECE(predictions, correct_tokens, probs, n_bins=50):
     ece = ece.sum()/predictions.numel()
     return ece
 
+def get_sample_tokens(p_total, num_samples):
+    x = range(p_total.shape[-1])
+    prediction_tokens = []
+    for p_series in p_total:
+        next_tokens = []
+        for p_step in p_series:
+            next_tokens.append(np.random.choice(x,num_samples, p=p_step))
+        prediction_tokens.append(next_tokens)
+    return np.array(prediction_tokens)
+
+def plot_time_series(data_naive, data_consistency, dataset_name, quantile=95):
+    fig, axes = plt.subplots(data_naive.shape[0], 1, figsize=(10, 15), sharex=True)
+
+    for i in range(data_naive.shape[0]):
+        ax = axes[i]
+        # Plot the 10 samples per timestep as a shaded region (distribution spread)
+        mean_series_naive = data_naive[i].mean(axis=1)
+        mean_series_cons = data_consistency[i].mean(axis=1)
+        std_series_cons = data_consistency[i].std(axis=1)
+
+        lower_bound_naive = np.percentile(data_naive[i], (100-quantile)/2, axis=1)
+        upper_bound_naive = np.percentile(data_naive[i], quantile + (100-quantile)/2, axis=1)
+
+        lower_bound_cons = np.percentile(data_consistency[i], (100-quantile)/2, axis=1)
+        upper_bound_cons = np.percentile(data_consistency[i], quantile + (100-quantile)/2, axis=1)
+
+        timesteps = np.arange(48)
+
+        ax.plot(timesteps, mean_series_naive, label=f"Naive", color='blue')
+        ax.fill_between(timesteps, lower_bound_naive, upper_bound_naive, color='blue', alpha=0.3)
+
+
+        ax.plot(timesteps, mean_series_cons, label=f"Consistency", color='red')
+        ax.fill_between(timesteps, lower_bound_cons, upper_bound_cons, color='red', alpha=0.3)
+
+        ax.set_title(f"Time Series {i+1} - Dataset {dataset_name}")
+        ax.set_ylabel("Value")
+        ax.legend()
+
+    axes[-1].set_xlabel("Timesteps")
+    plt.tight_layout()
+    plt.show()
 
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     series_fields = [
@@ -312,6 +354,7 @@ def compute_data_for_cc(
     logits = []
     predictions = []
     test_targets = test_targets.dataset
+    scales = []
     for batch in tqdm(batcher(zip(test_data_input, test_targets) , batch_size=batch_size)):
         context = [torch.tensor(entry[0]["target"]) for entry in batch]
         tgt = [torch.tensor(entry[1]["target"][-prediction_length:]) for entry in batch]
@@ -329,17 +372,20 @@ def compute_data_for_cc(
         correct_tokens.append(correct_batch_tokens)
         logits.append(original_logits)
         predictions.append(predicted_tokens)
-    
+        scales.append(scale)
+        
     predictions = [pred.squeeze() for pred in predictions]
     correct_tokens = [tok[:,:-1] for tok in correct_tokens]
 
+    scales = torch.cat(scales)
+    print('Scales shape:', scales.shape)
     predictions=torch.cat(predictions)
     correct_tokens=torch.cat(correct_tokens)
     logits=torch.cat(logits, axis=1)
 
     logits = logits.swapaxes(0,1)
 
-    return predictions.cpu(), correct_tokens.cpu(), logits.cpu()
+    return predictions.cpu(), correct_tokens.cpu(), logits.cpu(), scales.cpu()
 
 
 def compute_probability_metrics(naive_probs, consistency_probs):
@@ -518,16 +564,25 @@ def main(
                 top_k=top_k,
                 top_p=top_p,
             )
-        predictions, correct_tokens, logits = compute_data_for_cc(test_data.input,
+        predictions, correct_tokens, logits, scales = compute_data_for_cc(test_data.input,
                                                                   pipeline=pipeline,
                                                                   prediction_length=prediction_length,
                                                                   batch_size=batch_size,
                                                                   test_targets=test_data,
                                                                   **predict_kwargs)
         #logits,correct_tokens = group_logits_and_labels(logits, correct_tokens, group_size=10) # eps = 450 with gs 10
-        std = 25
-        n_bins = 10
-        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=20, std = std) #batch, items_in_batch, prob_tokens
+        std = 4
+        n_bins = 50
+        n_samples = 1000
+        naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=400, std = std) #batch, items_in_batch, prob_tokens
+
+        naive_sample_tokens = get_sample_tokens(naive_probs, n_samples)
+        cons_sample_tokens = get_sample_tokens(consistency_probs, n_samples)
+
+
+
+        plot_time_series(naive_sample_tokens, cons_sample_tokens, dataset_name)  
+
         naive_probs = torch.from_numpy(naive_probs).flatten(start_dim=0, end_dim=1)
         #consistency_probs = torch.full_like(naive_probs, 1/4096)
         consistency_probs = torch.from_numpy(consistency_probs).flatten(start_dim=0, end_dim=1)
