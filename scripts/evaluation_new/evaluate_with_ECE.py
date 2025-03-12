@@ -491,6 +491,8 @@ def main(
         backtest_configs = yaml.safe_load(fp)
 
     result_rows = []
+    all_naive_ece = []
+    all_calibrated_ece = []
     for config in backtest_configs:
         dataset_name = config["name"]
         prediction_length = config["prediction_length"]
@@ -555,6 +557,8 @@ def main(
                                         n_bins = n_bins)
         ece_naive = LIB_ECE(naive_probs, correct_tokens)
         ece_consistency = LIB_ECE(consistency_probs, correct_tokens)
+        all_naive_ece.append(ece_naive)
+        all_calibrated_ece.append(ece_consistency)
         print("Naive probs ECE: ", ece_naive)
         print("Consistency probs ECE: ", ece_consistency)
 
@@ -576,6 +580,10 @@ def main(
         result_rows.append(
             {"dataset": dataset_name, "model": chronos_model_id, **metrics[0]}
         )
+    print("all naive probs:", all_naive_ece)
+    print("all calibrated ece",all_calibrated_ece)
+    print("naive mean",np.mean(all_naive_ece))
+    print("calibrated mean",np.mean(all_calibrated_ece))
 
     # Save results to a CSV file
     results_df = (
