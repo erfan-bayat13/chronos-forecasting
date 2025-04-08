@@ -225,51 +225,61 @@ def get_sample_tokens(p_total, num_samples):
     return np.array(prediction_tokens)
 
 def plot_time_series(data_naive, data_consistency, dataset_name, quantile=95, ground_truth=None, max_preceding=256):
-    fig, axes = plt.subplots(data_naive.shape[0], 1, figsize=(10, 15), sharex=True)
+    """
+    Plots each time series in the input data as a separate plot.
 
+    Args:
+        data_naive (np.ndarray): Array of naive forecast samples (num_series, prediction_length, num_samples).
+        data_consistency (np.ndarray): Array of consistency model forecast samples (num_series, prediction_length, num_samples).
+        dataset_name (str): Name of the dataset for plot titles.
+        quantile (int): The quantile level for the confidence intervals (default: 95).
+        ground_truth (object, optional): Object containing ground truth data. Defaults to None.
+                                        Assumed to have attributes 'dataset' and 'input.test_data.dataset'.
+        max_preceding (int): Maximum number of preceding timesteps to plot (default: 256).
+    """
+    num_series = data_naive.shape[0]
     prediction_length = data_naive.shape[1]
+    timesteps = np.arange(prediction_length)
 
-    for i in range(data_naive.shape[0]):
-        ax = axes[i]
+    for i in range(num_series):
+    # for i in range(10):
+        plt.figure(figsize=(10, 6))  # Create a new figure for each plot
 
-        # Calculate statistics for naive and consistency data
+        # Calculate statistics for naive and consistency data for the current series
         mean_series_naive = data_naive[i].mean(axis=1)
         mean_series_cons = data_consistency[i].mean(axis=1)
         std_series_cons = data_consistency[i].std(axis=1)
 
-        lower_bound_naive = np.percentile(data_naive[i], (100-quantile)/2, axis=1)
-        upper_bound_naive = np.percentile(data_naive[i], quantile + (100-quantile)/2, axis=1)
+        lower_bound_naive = np.percentile(data_naive[i], (100 - quantile) / 2, axis=1)
+        upper_bound_naive = np.percentile(data_naive[i], quantile + (100 - quantile) / 2, axis=1)
 
-        lower_bound_cons = np.percentile(data_consistency[i], (100-quantile)/2, axis=1)
-        upper_bound_cons = np.percentile(data_consistency[i], quantile + (100-quantile)/2, axis=1)
-
-        timesteps = np.arange(prediction_length)
+        lower_bound_cons = np.percentile(data_consistency[i], (100 - quantile) / 2, axis=1)
+        upper_bound_cons = np.percentile(data_consistency[i], quantile + (100 - quantile) / 2, axis=1)
 
         if ground_truth is not None:
-            if max_preceding>0:
+            if max_preceding > 0:
                 preceding_series = ground_truth.input.test_data.dataset[i]["target"]  # Extract time series
-                n = min(len(preceding_series)-prediction_length, max_preceding)# Determine the length dynamically
+                n = min(len(preceding_series) - prediction_length, max_preceding)  # Determine the length dynamically
                 preceding_timesteps = np.arange(-n, 0)  # Negative indices for proper alignment
 
-                ax.plot(preceding_timesteps, preceding_series[-n-prediction_length:-prediction_length], label="Preceding Data", color='green', linestyle='dashed')
+                plt.plot(preceding_timesteps, preceding_series[-n - prediction_length:-prediction_length], label="Preceding Data", color='green', linestyle='dashed')
 
             real_ts = ground_truth.dataset[i]["target"][-prediction_length:]
-            ax.plot(timesteps, real_ts, label='Ground Truth', color='black')
+            plt.plot(timesteps, real_ts, label='Ground Truth', color='black')
 
         # Plot the main time series and shaded quantile ranges
-        ax.plot(timesteps, mean_series_naive, label="Naive", color='blue')
-        ax.fill_between(timesteps, lower_bound_naive, upper_bound_naive, color='blue', alpha=0.3)
+        plt.plot(timesteps, mean_series_naive, label="Naive", color='blue')
+        plt.fill_between(timesteps, lower_bound_naive, upper_bound_naive, color='blue', alpha=0.3)
 
-        ax.plot(timesteps, mean_series_cons, label="Consistency", color='red')
-        ax.fill_between(timesteps, lower_bound_cons, upper_bound_cons, color='red', alpha=0.3)
+        plt.plot(timesteps, mean_series_cons, label="Consistency", color='red')
+        plt.fill_between(timesteps, lower_bound_cons, upper_bound_cons, color='red', alpha=0.3)
 
-        ax.set_title(f"Time Series {i+1} - Dataset {dataset_name}")
-        ax.set_ylabel("Value")
-        ax.legend(loc='lower left')
-
-    axes[-1].set_xlabel("Timesteps")
-    plt.tight_layout()
-    plt.show()
+        plt.title(f"Time Series {i+1} - Dataset {dataset_name}")
+        plt.xlabel("Timesteps")
+        plt.ylabel("Value")
+        plt.legend(loc='lower left')
+        plt.tight_layout()
+        plt.show()
 
 def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     series_fields = [
