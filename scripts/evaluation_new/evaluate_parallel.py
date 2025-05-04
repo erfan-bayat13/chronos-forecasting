@@ -197,8 +197,8 @@ def compute_arguments(num_splits, logits_list, n_perturbations, std):
     for i in range(num_splits - 1):
         start = i * len_split
         end = (i + 1) * len_split
-        arguments.append((logits_list[start:end], n_perturbations, std))
-    arguments.append((logits_list[end:], n_perturbations, std))
+        arguments.append((logits_list[start:end], n_perturbations, std, i + 1))
+    arguments.append((logits_list[end:], n_perturbations, std, num_splits))
     return arguments
 
 
@@ -218,10 +218,12 @@ def softmax(x):
     return np.exp(x) / sum(np.exp(x))
 
 
-def compute_probabilities(logits_list, n_perturbations=10, std=0.1):
+def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
     naive_probs = []
     consistency_probs = []
-    for logits in tqdm(logits_list):
+    print(" ", end="", flush=True)
+    desc = "Parallel process {}".format(instance)
+    for logits in tqdm(logits_list, desc=desc, position=instance):
         naive_probs_per_logit = []
         consistency_probs_per_logit = []
         for logit in logits:
