@@ -1,3 +1,4 @@
+%%writefile /kaggle/working/chronos-forecasting/scripts/evaluation_new/evaluate_parallel.py
 import logging
 from pathlib import Path
 from typing import Iterable, Optional
@@ -197,7 +198,7 @@ def compute_arguments(num_splits, logits_list, n_perturbations, std):
     for i in range(num_splits - 1):
         start = i * len_split
         end = (i + 1) * len_split
-        arguments.append((logits_list[start:end], n_perturbations, std, i + 1))
+        arguments.append((logits_list[start:end], n_perturbations, std, i+1))
     arguments.append((logits_list[end:], n_perturbations, std, num_splits))
     return arguments
 
@@ -221,7 +222,7 @@ def softmax(x):
 def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
     naive_probs = []
     consistency_probs = []
-    print(" ", end="", flush=True)
+    print(" ", end="",flush=True)
     desc = "Parallel process {}".format(instance)
     for logits in tqdm(logits_list, desc=desc, position=instance):
         naive_probs_per_logit = []
@@ -367,7 +368,7 @@ def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     return gts_dataset
 
 
-def load_and_split_dataset(backtest_config: dict):
+def load_and_split_dataset(backtest_config: dict, max_series: int):
     hf_repo = backtest_config["hf_repo"]
     dataset_name = backtest_config["name"]
     offset = backtest_config["offset"]
@@ -377,7 +378,7 @@ def load_and_split_dataset(backtest_config: dict):
 
     # This is needed because the datasets in autogluon/chronos_datasets_extra cannot
     # be distribued due to license restrictions and must be generated on the fly
-    trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
+    trust_remote_code = (hf_repo == "autogluon/chronos_datasets_extra")
 
     if hf_repo == "local":
         ds = ArrowFile(dataset_name)
@@ -393,8 +394,15 @@ def load_and_split_dataset(backtest_config: dict):
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
         )
         ds.set_format("numpy")
+        n_samples = ds.shape[0]        
+        if n_samples > max_series:
+            print(f"Sampling only {max_series} at random from the dataset (original size: {n_samples})")
+            sample_indices = np.random.choice(n_samples, max_series, replace=False)
+            ds = ds.select(sample_indices)
+            ds.info.splits["train"].num_examples = max_series
 
-        gts_dataset = to_gluonts_univariate(ds)
+
+    gts_dataset = to_gluonts_univariate(ds)
 
     # Split dataset for evaluation
     _, test_template = split(gts_dataset, offset=offset)
@@ -419,8 +427,13 @@ def compute_data_for_cc(
     predictions = []
     test_targets = test_targets.dataset
     scales = []
+
+    test_data_input = np.array(list(test_data_input))
+    test_targets = np.array(test_targets)
+
+        
     for batch in tqdm(
-        batcher(zip(test_data_input, test_targets), batch_size=batch_size)
+        batcher(zip(test_data_input, test_targets), batch_size=batch_size), total=len(test_data_input)//batch_size+1
     ):
         context = [torch.tensor(entry[0]["target"]) for entry in batch]
         tgt = [torch.tensor(entry[1]["target"][-prediction_length:]) for entry in batch]
@@ -618,6 +631,7 @@ def main(
     temperature: Optional[float] = None,
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
+    max_series:int = 10_000
 ):
     """Evaluate Chronos models.
 
@@ -657,6 +671,9 @@ def main(
     top_p : Optional[float], optional, default = 1.0
         Top-p sampling, by default None
     """
+
+    np.random.seed(42)
+    torch.manual_seed(42) # jsut as a safeguard, probably not needed
     if isinstance(torch_dtype, str):
         torch_dtype = getattr(torch, torch_dtype)
     assert isinstance(torch_dtype, torch.dtype)
@@ -704,7 +721,7 @@ def main(
 
         # logger.info(f"Loading {dataset_name}")
         print(f"Loading {dataset_name}")
-        test_data = load_and_split_dataset(backtest_config=config)
+        test_data = load_and_split_dataset(backtest_config=config, max_series=max_series)
 
         # logger.info(
         #     f"Generating forecasts for {dataset_name} "
