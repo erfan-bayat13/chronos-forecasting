@@ -194,15 +194,15 @@ def compute_arguments(num_splits, logits_list, n_perturbations, std):
     # Memory-optimized partitioning
     size = logits_list.shape[0]
     arguments = []
-    
+
     # More even distribution with smaller chunks
     chunk_size = max(1, size // (num_splits * 2))
-    
+
     for i in range(0, size, chunk_size):
         end = min(i + chunk_size, size)
         chunk_id = i // chunk_size + 1
         arguments.append((logits_list[i:end], n_perturbations, std, chunk_id))
-    
+
     return arguments
 
 
@@ -225,32 +225,34 @@ def softmax(x):
 def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
     naive_probs = []
     consistency_probs = []
-    print(" ", end="",flush=True)
+    print(" ", end="", flush=True)
     desc = f"Parallel process {instance}"
-    
+
     # Process in smaller batches with better memory management
     batch_size = 250  # Even smaller batch size for less memory pressure
-    
+
     for i in range(0, len(logits_list), batch_size):
-        batch = logits_list[i:i+batch_size]
+        batch = logits_list[i : i + batch_size]
         batch_naive = []
         batch_consistency = []
-        
+
         for idx, logits in enumerate(batch):
             if idx % 25 == 0:  # Less frequent progress updates
                 print(f"\r{desc}: {i+idx}/{len(logits_list)}", end="", flush=True)
-                
+
             # Process one sample at a time
             naive_probs_sample = []
             consistency_probs_sample = []
-            
+
             for logit in logits:
                 # Calculate softmax once and reuse
                 naive_prob = softmax(logit)
                 naive_probs_sample.append(naive_prob)
-                
+
                 # Use more memory-efficient approach for consistency
-                consistency = np.zeros_like(logit, dtype=np.float32)  # Specify dtype for memory efficiency
+                consistency = np.zeros_like(
+                    logit, dtype=np.float32
+                )  # Specify dtype for memory efficiency
                 for _ in range(int(n_perturbations)):
                     # Generate perturbation directly into pre-allocated array
                     perturb = np.random.normal(0, std, size=logit.shape)
@@ -260,63 +262,65 @@ def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
                     # Clean up temporary arrays
                     del perturb
                     del logit_perturb
-                
+
                 # Normalize in-place
                 consistency /= n_perturbations
                 consistency_probs_sample.append(consistency)
-            
+
             batch_naive.append(naive_probs_sample)
             batch_consistency.append(consistency_probs_sample)
-            
+
             # Clear sample variables explicitly
             del naive_probs_sample
             del consistency_probs_sample
-        
+
         # Convert batch results to arrays and extend results
         naive_probs.extend(batch_naive)
         consistency_probs.extend(batch_consistency)
-        
+
         # Explicit cleanup
         del batch
         del batch_naive
         del batch_consistency
-        
+
         # Force garbage collection
         import gc
-        gc.collect()
-    
-    print(f"\r{desc}: Completed {len(logits_list)} samples", flush=True)
-    
-    # Convert to arrays at the end to minimize intermediate memory usage
-    return np.array(naive_probs, dtype=np.float32), np.array(consistency_probs, dtype=np.float32)
-            
 
+        gc.collect()
+
+    print(f"\r{desc}: Completed {len(logits_list)} samples", flush=True)
+
+    # Convert to arrays at the end to minimize intermediate memory usage
+    return np.array(naive_probs, dtype=np.float32), np.array(
+        consistency_probs, dtype=np.float32
+    )
 
 
 def get_sample_tokens(p_total, num_samples):
     x = np.arange(p_total.shape[-1], dtype=np.int32)
     prediction_tokens = []
-    
+
     # Process in batches
     batch_size = 500
     for i in range(0, len(p_total), batch_size):
-        batch = p_total[i:i+batch_size]
+        batch = p_total[i : i + batch_size]
         batch_tokens = []
-        
+
         for p_series in batch:
             series_tokens = []
             for p_step in p_series:
                 series_tokens.append(np.random.choice(x, num_samples, p=p_step))
             batch_tokens.append(series_tokens)
-        
+
         prediction_tokens.extend(batch_tokens)
-        
+
         # Clean up
         del batch
         del batch_tokens
         import gc
+
         gc.collect()
-    
+
     return np.array(prediction_tokens, dtype=np.int32)
 
 
@@ -435,7 +439,7 @@ def to_gluonts_univariate(hf_dataset: datasets.Dataset):
     return gts_dataset
 
 
-def load_and_split_dataset(backtest_config: dict):
+def load_and_split_dataset(backtest_config: dict, max_series: int):
     hf_repo = backtest_config["hf_repo"]
     dataset_name = backtest_config["name"]
     offset = backtest_config["offset"]
@@ -445,7 +449,7 @@ def load_and_split_dataset(backtest_config: dict):
 
     # This is needed because the datasets in autogluon/chronos_datasets_extra cannot
     # be distribued due to license restrictions and must be generated on the fly
-    trust_remote_code = True if hf_repo == "autogluon/chronos_datasets_extra" else False
+    trust_remote_code = hf_repo == "autogluon/chronos_datasets_extra"
 
     if hf_repo == "local":
         ds = ArrowFile(dataset_name)
@@ -461,8 +465,16 @@ def load_and_split_dataset(backtest_config: dict):
             hf_repo, dataset_name, split="train", trust_remote_code=trust_remote_code
         )
         ds.set_format("numpy")
+        n_samples = ds.shape[0]
+        if max_series is not None and n_samples > max_series:
+            print(
+                f"Sampling only {max_series} at random from the dataset (original size: {n_samples})"
+            )
+            sample_indices = np.random.choice(n_samples, max_series, replace=False)
+            ds = ds.select(sample_indices)
+            ds.info.splits["train"].num_examples = max_series
 
-        gts_dataset = to_gluonts_univariate(ds)
+    gts_dataset = to_gluonts_univariate(ds)
 
     # Split dataset for evaluation
     _, test_template = split(gts_dataset, offset=offset)
@@ -686,6 +698,7 @@ def main(
     temperature: Optional[float] = None,
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
+    max_series: Optional[int] = 10_000,
 ):
     """Evaluate Chronos models.
 
@@ -772,7 +785,9 @@ def main(
 
         # logger.info(f"Loading {dataset_name}")
         print(f"Loading {dataset_name}")
-        test_data = load_and_split_dataset(backtest_config=config)
+        test_data = load_and_split_dataset(
+            backtest_config=config, max_series=max_series
+        )
 
         # logger.info(
         #     f"Generating forecasts for {dataset_name} "
@@ -813,6 +828,7 @@ def main(
             naive_probs, consistency_probs = zip(*results)
             results = None
             import gc
+
             gc.collect()
             naive_probs = np.concatenate(naive_probs)
             consistency_probs = np.concatenate(consistency_probs)
