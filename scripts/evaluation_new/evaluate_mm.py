@@ -819,7 +819,7 @@ def main(
             num_processes = min(3, num_cores)  # Limit processes for large datasets
         else:
             num_processes = min(len(test_data.input), num_cores)
-        arguments = compute_arguments(num_processes, logits, std, n_perturbations)
+        arguments = compute_arguments(num_processes, logits, n_perturbations, std)
         # print("logits.shape:", logits.shape)
         with Pool(num_processes) as pool:
             results = pool.starmap(compute_probabilities, arguments)
