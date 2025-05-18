@@ -698,7 +698,7 @@ def main(
     temperature: Optional[float] = None,
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
-    max_series: Optional[int] = 10_000,
+    max_series: Optional[int] = 24_000,
 ):
     """Evaluate Chronos models.
 
