@@ -255,8 +255,8 @@ def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
                 )  # Specify dtype for memory efficiency
                 for _ in range(int(n_perturbations)):
                     # Generate perturbation directly into pre-allocated array
-                    print("logit is :")
-                    print(logit)
+                    # print("logit is :")
+                    # print(logit)
                     perturb = np.random.normal(0, std*logit.std(), size=logit.shape)
                     logit_perturb = logit + perturb
                     max_index = np.argmax(logit_perturb)
