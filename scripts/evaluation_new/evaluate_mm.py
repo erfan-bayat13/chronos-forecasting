@@ -1,3 +1,4 @@
+import random
 import logging
 from pathlib import Path
 from typing import Iterable, Optional
@@ -199,9 +200,12 @@ def compute_arguments(num_splits, logits_list, n_perturbations, std):
     chunk_size = max(1, size // (num_splits * 2))
 
     for i in range(0, size, chunk_size):
+        process_seed = random.randint(0, 1e9)
         end = min(i + chunk_size, size)
         chunk_id = i // chunk_size + 1
-        arguments.append((logits_list[i:end], n_perturbations, std, chunk_id))
+        arguments.append(
+            (logits_list[i:end], n_perturbations, std, chunk_id, process_seed)
+        )
 
     return arguments
 
@@ -222,7 +226,9 @@ def softmax(x):
     return np.exp(x) / sum(np.exp(x))
 
 
-def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
+def compute_probabilities(
+    logits_list, n_perturbations=10, std=0.1, instance=1, process_seed=None
+):
     naive_probs = []
     consistency_probs = []
     print(" ", end="", flush=True)
@@ -230,6 +236,11 @@ def compute_probabilities(logits_list, n_perturbations=10, std=0.1, instance=1):
 
     # Process in smaller batches with better memory management
     batch_size = 250  # Even smaller batch size for less memory pressure
+
+    if process_seed:
+        random.seed(process_seed)
+        np.random.seed(process_seed)
+        torch.manual_seed(process_seed)
 
     for i in range(0, len(logits_list), batch_size):
         batch = logits_list[i : i + batch_size]
@@ -741,6 +752,10 @@ def main(
     if isinstance(torch_dtype, str):
         torch_dtype = getattr(torch, torch_dtype)
     assert isinstance(torch_dtype, torch.dtype)
+
+    random.seed(42)
+    np.random.seed(42)
+    torch.manual_seed(42)
 
     num_cores = multiprocessing.cpu_count()
     # Load Chronos
