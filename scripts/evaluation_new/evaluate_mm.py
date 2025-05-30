@@ -191,7 +191,7 @@ offset_alias_to_period_alias = {
 }
 
 
-def compute_arguments(num_splits, logits_list, n_perturbations, std):
+def compute_arguments(num_splits, logits_list, n_perturbations, std, compute_naive):
     # Memory-optimized partitioning
     size = logits_list.shape[0]
     arguments = []
@@ -204,7 +204,14 @@ def compute_arguments(num_splits, logits_list, n_perturbations, std):
         end = min(i + chunk_size, size)
         chunk_id = i // chunk_size + 1
         arguments.append(
-            (logits_list[i:end], n_perturbations, std, chunk_id, process_seed)
+            (
+                logits_list[i:end],
+                n_perturbations,
+                std,
+                chunk_id,
+                compute_naive,
+                process_seed,
+            )
         )
 
     return arguments
@@ -227,7 +234,12 @@ def softmax(x):
 
 
 def compute_probabilities(
-    logits_list, n_perturbations=10, std=0.1, instance=1, process_seed=None
+    logits_list,
+    n_perturbations=10,
+    std=0.1,
+    instance=1,
+    compute_naive=True,
+    process_seed=None,
 ):
     naive_probs = []
     consistency_probs = []
@@ -257,8 +269,9 @@ def compute_probabilities(
 
             for logit in logits:
                 # Calculate softmax once and reuse
-                naive_prob = softmax(logit)
-                naive_probs_sample.append(naive_prob)
+                if compute_naive:
+                    naive_prob = softmax(logit)
+                    naive_probs_sample.append(naive_prob)
 
                 # Use more memory-efficient approach for consistency
                 consistency = np.zeros_like(
@@ -277,8 +290,8 @@ def compute_probabilities(
                 # Normalize in-place
                 consistency /= n_perturbations
                 consistency_probs_sample.append(consistency)
-
-            batch_naive.append(naive_probs_sample)
+            if compute_naive:
+                batch_naive.append(naive_probs_sample)
             batch_consistency.append(consistency_probs_sample)
 
             # Clear sample variables explicitly
@@ -286,7 +299,8 @@ def compute_probabilities(
             del consistency_probs_sample
 
         # Convert batch results to arrays and extend results
-        naive_probs.extend(batch_naive)
+        if compute_naive:
+            naive_probs.extend(batch_naive)
         consistency_probs.extend(batch_consistency)
 
         # Explicit cleanup
@@ -664,16 +678,18 @@ def group_logits_and_labels(logits, correct_tokens, group_size=10):
 
 
 def compute_metrics(forecasts_naive, forecasts_cons, test_data, batch_size=5000):
-    metrics_naive = (
-        evaluate_forecasts(
-            forecasts_naive,
-            test_data=test_data,
-            metrics=[MASE(), MeanWeightedSumQuantileLoss(np.arange(0.1, 1.0, 0.1))],
-            batch_size=batch_size,
+    metrics_naive = None
+    if forecasts_naive:
+        metrics_naive = (
+            evaluate_forecasts(
+                forecasts_naive,
+                test_data=test_data,
+                metrics=[MASE(), MeanWeightedSumQuantileLoss(np.arange(0.1, 1.0, 0.1))],
+                batch_size=batch_size,
+            )
+            .reset_index(drop=True)
+            .to_dict(orient="records")
         )
-        .reset_index(drop=True)
-        .to_dict(orient="records")
-    )
 
     metrics_cons = (
         evaluate_forecasts(
@@ -710,6 +726,7 @@ def main(
     top_k: Optional[int] = None,
     top_p: Optional[float] = None,
     max_series: Optional[int] = 24_000,
+    compute_naive: Optional[bool] = False,
 ):
     """Evaluate Chronos models.
 
@@ -834,7 +851,9 @@ def main(
             num_processes = min(3, num_cores)  # Limit processes for large datasets
         else:
             num_processes = min(len(test_data.input), num_cores)
-        arguments = compute_arguments(num_processes, logits, n_perturbations, std)
+        arguments = compute_arguments(
+            num_processes, logits, n_perturbations, std, compute_naive
+        )
         # print("logits.shape:", logits.shape)
         with Pool(num_processes) as pool:
             results = pool.starmap(compute_probabilities, arguments)
@@ -845,18 +864,21 @@ def main(
             import gc
 
             gc.collect()
-            naive_probs = np.concatenate(naive_probs)
+            if compute_naive:
+                naive_probs = np.concatenate(naive_probs)
+                naive_sample_tokens = get_sample_tokens(naive_probs, n_samples)
+                predicted_ts_naive, forecasts_naive = get_forecasts_cc(
+                    test_data.input, naive_sample_tokens, pipeline, scales
+                )
+                naive_probs = torch.from_numpy(naive_probs).flatten(
+                    start_dim=0, end_dim=1
+                )
+
             consistency_probs = np.concatenate(consistency_probs)
-            print("naive_probs.shape:", naive_probs.shape)
-            print("consistency_probs.shape:", consistency_probs.shape)
             # naive_probs, consistency_probs = compute_probabilities(logits, n_perturbations=n_perturbations, std = std)
 
-        naive_sample_tokens = get_sample_tokens(naive_probs, n_samples)
         cons_sample_tokens = get_sample_tokens(consistency_probs, n_samples)
 
-        predicted_ts_naive, forecasts_naive = get_forecasts_cc(
-            test_data.input, naive_sample_tokens, pipeline, scales
-        )
         predicted_ts_cons, forecasts_cons = get_forecasts_cc(
             test_data.input, cons_sample_tokens, pipeline, scales
         )
@@ -870,7 +892,6 @@ def main(
         #                  max_preceding=100)
 
         # reshape arrays for compatibility reasons with ECE library implementation
-        naive_probs = torch.from_numpy(naive_probs).flatten(start_dim=0, end_dim=1)
         consistency_probs = torch.from_numpy(consistency_probs).flatten(
             start_dim=0, end_dim=1
         )
@@ -891,19 +912,23 @@ def main(
         # plt.show()
 
         ECE = MulticlassCalibrationError(
-            num_classes=naive_probs.shape[-1], n_bins=n_bins
+            num_classes=consistency_probs.shape[-1], n_bins=n_bins
         )
-        ece_naive = ECE(naive_probs, correct_tokens)
+        if compute_naive:
+            ece_naive = ECE(naive_probs, correct_tokens)
+            all_naive_ece.append(ece_naive)
+            print("Naive probs ECE: ", ece_naive)
+
         ece_consistency = ECE(consistency_probs, correct_tokens)
-        all_naive_ece.append(ece_naive)
         all_calibrated_ece.append(ece_consistency)
 
-        print("Naive probs ECE: ", ece_naive)
         print("Consistency probs ECE: ", ece_consistency)
 
         # logger.info(f"Evaluating forecasts for {dataset_name}")
         print(f"Evaluating forecasts for {dataset_name}")
 
+        if not compute_naive:
+            forecasts_naive = None
         metrics_naive, metrics_cons = compute_metrics(
             forecasts_naive, forecasts_cons, test_data
         )
@@ -911,15 +936,21 @@ def main(
         print("Naive metrics: ", metrics_naive)
         print("Cons metrics: ", metrics_cons)
 
-        metrics_naive_dict = metrics_naive[0]
-        metrics_naive_dict["ECE"] = ece_naive.item()
+        if compute_naive:
+            metrics_naive_dict = metrics_naive[0]
+            metrics_naive_dict["ECE"] = ece_naive.item()
 
         metrics_cons_dict = metrics_cons[0]
         metrics_cons_dict["ECE"] = ece_consistency.item()
 
-        result_rows_naive.append(
-            {"dataset": dataset_name, "model": chronos_model_id, **metrics_naive_dict}
-        )
+        if compute_naive:
+            result_rows_naive.append(
+                {
+                    "dataset": dataset_name,
+                    "model": chronos_model_id,
+                    **metrics_naive_dict,
+                }
+            )
         result_rows_cons.append(
             {"dataset": dataset_name, "model": chronos_model_id, **metrics_cons_dict}
         )
@@ -928,15 +959,16 @@ def main(
         print("Time/series: ", elapsed_time.total_seconds() / len(test_data.input))
         os.makedirs("Results", exist_ok=True)
         # Save results to CSV files
-        results_df_naive = (
-            pd.DataFrame(result_rows_naive)
-            .rename(
-                {"MASE[0.5]": "MASE", "mean_weighted_sum_quantile_loss": "WQL"},
-                axis="columns",
+        if compute_naive:
+            results_df_naive = (
+                pd.DataFrame(result_rows_naive)
+                .rename(
+                    {"MASE[0.5]": "MASE", "mean_weighted_sum_quantile_loss": "WQL"},
+                    axis="columns",
+                )
+                .sort_values(by="dataset")
             )
-            .sort_values(by="dataset")
-        )
-        results_df_naive.to_csv(metrics_path_naive, index=False)
+            results_df_naive.to_csv(metrics_path_naive, index=False)
 
         results_df_cons = (
             pd.DataFrame(result_rows_cons)
@@ -955,15 +987,16 @@ def main(
 
     os.makedirs("Results", exist_ok=True)
     # Save results to CSV files
-    results_df_naive = (
-        pd.DataFrame(result_rows_naive)
-        .rename(
-            {"MASE[0.5]": "MASE", "mean_weighted_sum_quantile_loss": "WQL"},
-            axis="columns",
+    if compute_naive:
+        results_df_naive = (
+            pd.DataFrame(result_rows_naive)
+            .rename(
+                {"MASE[0.5]": "MASE", "mean_weighted_sum_quantile_loss": "WQL"},
+                axis="columns",
+            )
+            .sort_values(by="dataset")
         )
-        .sort_values(by="dataset")
-    )
-    results_df_naive.to_csv(metrics_path_naive, index=False)
+        results_df_naive.to_csv(metrics_path_naive, index=False)
 
     results_df_cons = (
         pd.DataFrame(result_rows_cons)
